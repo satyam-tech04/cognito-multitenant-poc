@@ -35,7 +35,8 @@ await build({
 writeFileSync(`${fn}/package.json`, JSON.stringify({ type: 'commonjs' }));
 writeFileSync(
   `${fn}/.vc-config.json`,
-  JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', shouldAddHelpers: false, maxDuration: 10 }),
+  // Mumbai (bom1): next to Cognito and the registry table in ap-south-1
+  JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js', launcherType: 'Nodejs', shouldAddHelpers: false, maxDuration: 10, regions: ['bom1'] }),
 );
 
 // 3. Routing: files first, then the API, then the app's page routes
