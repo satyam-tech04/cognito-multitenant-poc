@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { applyTheme, navigate } from '../lib';
-import { APP_LABEL, getSession, hostedSignIn, loadDemo, ssoDomainOf, type AppKey, type SignupDemoConfig } from './demoLib';
+import { APP_LABEL, getSession, hostedSignIn, loadDemo, ssoDomainOf, type SignupDemoConfig } from './demoLib';
 import { MicrosoftLogo } from './BrandFrame';
 
 /** /demo: the two ways to register and sign in, side by side, on one shared user pool */
@@ -21,7 +21,7 @@ export function DemoHome() {
 
   const otp = c.signInFactors.includes('EMAIL_OTP');
   const passkeys = c.signInFactors.includes('WEB_AUTHN');
-  const signedIn = (['product1', 'product2', 'own'] as AppKey[]).filter((a) => getSession(a));
+  const signedIn = (['product1', 'product2', 'own'] as const).filter((a) => getSession(a));
 
   const workEmailSso = (e: FormEvent) => {
     e.preventDefault();
@@ -60,6 +60,17 @@ export function DemoHome() {
             </button>
           ))}
         </div>
+      )}
+
+      {(c.tenants?.length ?? 0) > 0 && (
+        <button className="demo-mt-banner" onClick={() => navigate('/demo/tenants')}>
+          <span className="demo-tag c">C</span>
+          <span>
+            <b>Multi-tenant flow: {c.tenants!.length} tenants × 3 apps</b>
+            <span className="muted">Sign in once, single sign-on across a tenant's apps, other tenants refused at sign-in and in the API, with a live step-by-step flow.</span>
+          </span>
+          <span className="demo-mt-go">Open →</span>
+        </button>
       )}
 
       <div className="demo-cols">

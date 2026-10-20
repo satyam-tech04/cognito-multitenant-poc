@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { applyTheme, decodeJwt, navigate } from '../lib';
 import { Field } from './BrandFrame';
-import { AFFILIATION_MAX, APP_LABEL, friendly, getProfile, getSession, hostedSignIn, loadDemo, saveAffiliation, signOut, type AppKey, type Profile, type SignupDemoConfig } from './demoLib';
+import { AFFILIATION_MAX, friendly, labelOf, getProfile, getSession, hostedSignIn, loadDemo, saveAffiliation, signOut, type AppKey, type Profile, type SignupDemoConfig } from './demoLib';
 
 /** /demo/account?app=…: who is signed in, how, their profile, and single sign-on to the other product */
 export function DemoAccount() {
@@ -14,6 +14,7 @@ export function DemoAccount() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const session = getSession(app);
+  const label = (k: AppKey) => (c ? labelOf(c, k) : k);
 
   useEffect(() => {
     applyTheme(null);
@@ -30,7 +31,7 @@ export function DemoAccount() {
     return (
       <main className="demo">
         <div className="card narrow">
-          <h2>Not signed in to {APP_LABEL[app]}</h2>
+          <h2>Not signed in to {label(app)}</h2>
           <p className="muted">The session has ended or this tab never signed in.</p>
           <button className="btn" onClick={() => navigate('/demo')}>Back to the demo</button>
         </div>
@@ -68,7 +69,7 @@ export function DemoAccount() {
           <span className={`demo-tag ${hosted ? 'a' : 'b'}`}>{hosted ? 'A' : 'B'}</span>
           <div>
             <p className="eyebrow">{hosted ? 'Cognito hosted pages' : 'Our own pages'}</p>
-            <h1>Signed in to {APP_LABEL[app]}</h1>
+            <h1>Signed in to {label(app)}</h1>
             {qs.get('welcome') && <p className="bf-notice">Email verified and account created.</p>}
           </div>
         </div>
@@ -99,8 +100,8 @@ export function DemoAccount() {
           {other && (
             <div className="demo-sso-box">
               <h2>Single sign-on</h2>
-              <p className="muted">{APP_LABEL[other]} is a separate app client on the same pool. Cognito remembers this sign-in for 1 hour, so it opens without asking for a password.</p>
-              <button className="btn" onClick={() => hostedSignIn(c, other, { method: `Single sign-on from ${APP_LABEL[app]} (no password)` })}>Open {APP_LABEL[other]}</button>
+              <p className="muted">{label(other)} is a separate app client on the same pool. Cognito remembers this sign-in for 1 hour, so it opens without asking for a password.</p>
+              <button className="btn" onClick={() => hostedSignIn(c, other, { method: `Single sign-on from ${label(app)} (no password)` })}>Open {label(other)}</button>
             </div>
           )}
           <button className="btn ghost" onClick={() => signOut(c, app)}>Sign out</button>

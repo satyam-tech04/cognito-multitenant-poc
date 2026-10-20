@@ -9,5 +9,9 @@
   "ssoDomains": [
     "yourcompany.com"
   ],
-  "panelColor": "#2759c8"
+  "panelColor": "#2759c8",
+  "ssoTenant": {
+    "id": "yourcompany",
+    "name": "Your Company (Microsoft sign-in)"
+  }
 }

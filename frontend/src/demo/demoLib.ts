@@ -7,14 +7,31 @@
 import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
 import { OwnAuth, type OwnTokens } from '../ownAuth';
 import { decodeJwt, getApiUrl, navigate } from '../lib';
-import type { SignupDemoConfig } from '../../../shared/signup-demo';
+import type { DemoTenant, SignupDemoConfig } from '../../../shared/signup-demo';
 
-export type { SignupDemoConfig };
+export type { DemoTenant, SignupDemoConfig };
 export { AFFILIATION_ATTR, AFFILIATION_MAX } from '../../../shared/signup-demo';
 
-/** product1 / product2 = hosted pages on two app clients (to show SSO); own = our own pages */
-export type AppKey = 'product1' | 'product2' | 'own';
-export const APP_LABEL: Record<AppKey, string> = { product1: 'Product 1', product2: 'Product 2', own: 'Our own pages' };
+/**
+ * product1 / product2 = hosted pages on two app clients (to show SSO); own = our own pages;
+ * "<tenant>:<app>" = one of a tenant's three app clients (multi-tenant flow)
+ */
+export type AppKey = 'product1' | 'product2' | 'own' | `${string}:app${1 | 2 | 3}`;
+export const APP_LABEL: Record<'product1' | 'product2' | 'own', string> = { product1: 'Product 1', product2: 'Product 2', own: 'Our own pages' };
+export const isTenantKey = (k: string): k is `${string}:app${1 | 2 | 3}` => /^[a-z0-9-]+:app[123]$/.test(k);
+export const tenantKey = (tenantId: string, app: string) => `${tenantId}:${app}` as AppKey;
+
+export function tenantAppOf(c: SignupDemoConfig, key: AppKey) {
+  if (!isTenantKey(key)) return undefined;
+  const [tid, app] = key.split(':');
+  const tenant = c.tenants?.find((t) => t.id === tid);
+  const a = tenant?.apps.find((x) => x.key === app);
+  return tenant && a ? { tenant, app: a } : undefined;
+}
+export function labelOf(c: SignupDemoConfig, key: AppKey): string {
+  const t = tenantAppOf(c, key);
+  return t ? `${t.tenant.name} · ${t.app.name}` : APP_LABEL[key as keyof typeof APP_LABEL] ?? key;
+}
 
 export interface DemoSession {
   app: AppKey;
@@ -39,7 +56,37 @@ export function loadDemo(): Promise<SignupDemoConfig> {
   return configP;
 }
 
-const clientIdOf = (c: SignupDemoConfig, app: AppKey) => (app === 'own' ? c.ownClientId : c.hostedClients[app]);
+function clientIdOf(c: SignupDemoConfig, app: AppKey): string {
+  if (app === 'own') return c.ownClientId;
+  if (app === 'product1' || app === 'product2') return c.hostedClients[app];
+  const t = tenantAppOf(c, app);
+  if (!t) throw new Error(`Unknown app ${app}`);
+  return t.app.clientId;
+}
+
+// ---------- live flow log (multi-tenant page) ----------
+export interface FlowStep {
+  at: number;
+  kind: 'go' | 'back' | 'token' | 'sso' | 'ok' | 'refused' | 'api' | 'info';
+  title: string;
+  detail?: string;
+}
+const FLOW = 'demo.flow';
+export function flowSteps(): FlowStep[] {
+  try {
+    return JSON.parse(sessionStorage.getItem(FLOW) ?? '[]');
+  } catch {
+    return [];
+  }
+}
+export function logFlow(kind: FlowStep['kind'], title: string, detail?: string) {
+  sessionStorage.setItem(FLOW, JSON.stringify([...flowSteps(), { at: Date.now(), kind, title, detail }].slice(-60)));
+  window.dispatchEvent(new Event('demo-flow'));
+}
+export function clearFlow() {
+  sessionStorage.removeItem(FLOW);
+  window.dispatchEvent(new Event('demo-flow'));
+}
 
 // ---------- sessions (sessionStorage: cleared when the tab closes) ----------
 const SESSIONS = 'demo.sessions';
@@ -97,6 +144,8 @@ function manager(c: SignupDemoConfig, app: AppKey, page: 'authorize' | 'signup' 
 }
 
 const PENDING = 'demo.pending';
+/** A round trip faster than this can't have included typing on Cognito's login page */
+const SSO_MAX_MS = 6000;
 export interface HostedOptions {
   /** Open Cognito's sign-up page instead of sign-in */
   signup?: boolean;
@@ -107,7 +156,10 @@ export interface HostedOptions {
   method: string;
 }
 export async function hostedSignIn(c: SignupDemoConfig, app: AppKey, o: HostedOptions) {
-  sessionStorage.setItem(PENDING, JSON.stringify({ app, method: o.method }));
+  sessionStorage.setItem(PENDING, JSON.stringify({ app, method: o.method, startedAt: Date.now() }));
+  if (isTenantKey(app)) {
+    logFlow('go', `Open ${labelOf(c, app)}`, `Browser → Cognito /oauth2/authorize · client_id=${clientIdOf(c, app)} · response_type=code · PKCE S256${o.idp ? ` · identity_provider=${o.idp}` : ''}`);
+  }
   const extra: Record<string, string> = {};
   if (o.idp) extra.identity_provider = o.idp;
   if (o.idpIdentifier) extra.idp_identifier = o.idpIdentifier;
@@ -118,14 +170,27 @@ export async function hostedSignIn(c: SignupDemoConfig, app: AppKey, o: HostedOp
 export async function completeHostedSignIn(): Promise<AppKey> {
   const raw = sessionStorage.getItem(PENDING);
   if (!raw) throw new Error('No sign-in in progress. Start again from the demo page.');
-  const { app, method } = JSON.parse(raw) as { app: AppKey; method: string };
+  const { app, method, startedAt } = JSON.parse(raw) as { app: AppKey; method: string; startedAt?: number };
   const c = await loadDemo();
+  const tenantFlow = isTenantKey(app);
+  if (tenantFlow) logFlow('back', 'Back at /demo/callback with an authorization code', `${labelOf(c, app)} · state checked`);
   // Both sign-in and sign-up requests share one state store, so either manager can complete them
   const u = await manager(c, app).signinRedirectCallback();
   sessionStorage.removeItem(PENDING);
   const id = decodeJwt(u.id_token ?? '');
+  const access = decodeJwt(u.access_token);
   const viaMs = Array.isArray(id.identities) && id.identities.length > 0;
-  saveSession({ app, method: viaMs ? 'Microsoft' : method, idToken: u.id_token!, accessToken: u.access_token, refreshToken: u.refresh_token, at: Date.now() });
+  // Cognito's session cookie was reused when the browser came straight back: faster than anyone can sign in,
+  // or with an auth_time older than this redirect
+  const elapsed = startedAt ? Date.now() - startedAt : Infinity;
+  const sso = elapsed < SSO_MAX_MS || Boolean(startedAt && Number(id.auth_time) * 1000 < startedAt - 1000);
+  const how = sso ? 'Single sign-on (no login page)' : viaMs ? 'Microsoft' : method;
+  if (tenantFlow) {
+    logFlow('token', 'Code + PKCE verifier exchanged at /oauth2/token', 'Cognito returned an ID token, an access token and a refresh token');
+    if (sso) logFlow('sso', 'Single sign-on: no login page shown', `Cognito's session cookie was reused; back in ${(elapsed / 1000).toFixed(1)} s`);
+    logFlow('ok', `Signed in to ${labelOf(c, app)}`, `Access token claims · tenant_id=${access.tenant_id} · app=${access.app} · role=${access.role} · client_id=${access.client_id}`);
+  }
+  saveSession({ app, method: how, idToken: u.id_token!, accessToken: u.access_token, refreshToken: u.refresh_token, at: Date.now() });
   return app;
 }
 
@@ -272,17 +337,42 @@ export async function getProfile(c: SignupDemoConfig, accessToken: string): Prom
 export const saveAffiliation = (c: SignupDemoConfig, accessToken: string, value: string) =>
   idp(c, 'UpdateUserAttributes', { AccessToken: accessToken, UserAttributes: [{ Name: 'custom:affiliation', Value: value.trim() }] });
 
+/** Which app a failed callback was for (Cognito's error comes back to /demo/callback) */
+export function pendingApp(): AppKey | undefined {
+  try {
+    return (JSON.parse(sessionStorage.getItem(PENDING) ?? 'null') as { app: AppKey } | null)?.app;
+  } catch {
+    return undefined;
+  }
+}
+export function clearPending() {
+  sessionStorage.removeItem(PENDING);
+}
+
+// ---------- multi-tenant API check ----------
+export async function callTenantApi(c: SignupDemoConfig, from: AppKey, target: DemoTenant) {
+  const s = getSession(from);
+  const path = `/demo-tenants/${target.id}/data`;
+  const r = await fetch(`${await getApiUrl()}${path}`, { headers: s ? { authorization: `Bearer ${s.accessToken}` } : {} });
+  const body = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+  const ok = r.status === 200;
+  logFlow(ok ? 'api' : 'refused', `API ${path} → ${r.status}${ok ? '' : ` ${String(body.error ?? '')}`}`, ok ? `Data returned for ${target.name}` : String(body.message ?? `Called with the ${labelOf(c, from)} token`));
+  return { status: r.status, body };
+}
+
 // ---------- sign-out ----------
 export async function signOut(c: SignupDemoConfig, app: AppKey) {
   const s = sessions()[app];
   if (s?.refreshToken) await idp(c, 'RevokeToken', { Token: s.refreshToken, ClientId: clientIdOf(c, app) }).catch(() => undefined);
   dropSession(app);
   if (app === 'own') return navigate('/demo');
-  // Hosted pages: clear Cognito's session cookie too, or the next sign-in skips the page
-  for (const other of ['product1', 'product2'] as const) dropSession(other);
+  // Hosted pages share one Cognito session cookie: clear it, and every hosted session with it
+  for (const k of Object.keys(sessions()) as AppKey[]) if (k !== 'own') dropSession(k);
+  const back = isTenantKey(app) ? '/demo/tenants' : '/demo';
+  if (isTenantKey(app)) logFlow('info', 'Signed out of every app', "Refresh tokens revoked and Cognito's session cookie cleared at /logout");
   const u = new URL(`${c.loginDomain}/logout`);
   u.searchParams.set('client_id', clientIdOf(c, app));
-  u.searchParams.set('logout_uri', `${window.location.origin}/demo`);
+  u.searchParams.set('logout_uri', `${window.location.origin}${back}`);
   window.location.assign(u.toString());
 }
 

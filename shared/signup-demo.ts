@@ -39,7 +39,31 @@ export interface SignupDemoConfig {
   /** Why a factor is missing, e.g. EMAIL_OTP needs Amazon SES */
   notes: string[];
   brand: SignupDemoBrand;
+  /** Multi-tenant flow: tenants sharing this pool, each with three app clients */
+  tenants?: DemoTenant[];
 }
+
+export interface DemoTenantApp {
+  key: 'app1' | 'app2' | 'app3';
+  name: string;
+  clientId: string;
+}
+export interface DemoTenant {
+  id: string;
+  name: string;
+  color: string;
+  /** Microsoft users with these email domains belong to this tenant */
+  allowedDomains: string[];
+  apps: DemoTenantApp[];
+  /** Seeded password users, so the demo can show both a member and a non-member */
+  demoUsers: string[];
+}
+
+export const DEMO_APPS: Array<Pick<DemoTenantApp, 'key' | 'name'>> = [
+  { key: 'app1', name: 'Submissions' },
+  { key: 'app2', name: 'Reviews' },
+  { key: 'app3', name: 'Reports' },
+];
 
 export const AFFILIATION_ATTR = 'custom:affiliation';
 export const AFFILIATION_MAX = 500;

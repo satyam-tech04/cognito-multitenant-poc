@@ -3,6 +3,8 @@
  *   A  Cognito's hosted pages (managed login): sign-up, sign-in, Microsoft, email OTP, passkeys,
  *      work-email SSO, and single sign-on between two products
  *   B  our own sign-up and sign-in pages in the web app (/demo/register, /demo/login)
+ *   C  multi-tenant flow (/demo/tenants): tenants share the pool, each with three app clients;
+ *      a pre-token trigger adds tenant/app claims and refuses users from other tenants
  *
  *   npm run signup-demo
  *
@@ -11,6 +13,10 @@
  * Brand (name, colours, images) comes from config/signup-demo.local.json, which is gitignored.
  */
 import {
+  AdminAddUserToGroupCommand,
+  AdminCreateUserCommand,
+  AdminSetUserPasswordCommand,
+  CreateGroupCommand,
   CreateIdentityProviderCommand,
   CreateManagedLoginBrandingCommand,
   CreateUserPoolClientCommand,
@@ -18,11 +24,14 @@ import {
   DeleteManagedLoginBrandingCommand,
   DescribeManagedLoginBrandingByClientCommand,
   DescribeManagedLoginBrandingCommand,
+  DescribeUserPoolClientCommand,
   DescribeUserPoolCommand,
   ListUserPoolClientsCommand,
   SetUserPoolMfaConfigCommand,
   UpdateIdentityProviderCommand,
   UpdateManagedLoginBrandingCommand,
+  UpdateUserPoolClientCommand,
+  UpdateUserPoolCommand,
   type AssetType,
   type CreateUserPoolCommandInput,
 } from '@aws-sdk/client-cognito-identity-provider';
@@ -40,10 +49,11 @@ import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { assertAwsAccount, cognito, config, ddb, domainPrefix, idpCreds, issuerFor, loginDomainUrl, outputs, readJson, sleep, writeJson } from './lib/common';
+import { assertAwsAccount, cognito, config, ddb, demoPassword, domainPrefix, idpCreds, issuerFor, loginDomainUrl, outputs, readJson, sleep, writeJson } from './lib/common';
 import { createDomain, findPoolByName, IDP_MICROSOFT } from './lib/provision';
 import { cognitoColor } from './lib/branding';
-import { AFFILIATION_MAX, SIGNUP_DEMO_KEY, type SignupDemoBrand, type SignupDemoConfig } from '../shared/signup-demo';
+import { AFFILIATION_MAX, DEMO_APPS, SIGNUP_DEMO_KEY, type DemoTenant, type SignupDemoBrand, type SignupDemoConfig } from '../shared/signup-demo';
+import type { TenantApp } from '../lambda/demo-pre-token';
 
 interface LocalBrand {
   nameAccent: string;
@@ -54,11 +64,14 @@ interface LocalBrand {
   panelColor?: string;
   hostedBackground?: string;
   ssoDomains?: string[];
+  /** Optional third tenant whose members sign in with Microsoft (email domain = ssoDomains) */
+  ssoTenant?: { id: string; name: string };
 }
 
 const p = config.resourcePrefix;
 const POOL_NAME = `${p}-signup-demo`;
 const FN_NAME = `${p}-pre-signup`;
+const TOKEN_FN = `${p}-demo-pre-token`;
 // The account's policy only allows changes to resources tagged for this POC
 const tags = { poc: p, purpose: 'signup-demo' };
 const CLIENTS = { product1: 'signup-hosted-product1', product2: 'signup-hosted-product2', own: 'signup-own-pages' } as const;
@@ -70,6 +83,14 @@ const local: LocalBrand = existsSync(brandFile)
   : { nameAccent: 'Demo', nameRest: ' Portal', accent: '#d32f2f', primary: '#003da5', ssoDomains: [] };
 const ssoDomains = (local.ssoDomains ?? []).map((d) => d.toLowerCase());
 
+// Multi-tenant flow: two password tenants, plus a Microsoft tenant when one is configured
+const TENANTS: Array<Omit<DemoTenant, 'apps' | 'demoUsers'>> = [
+  { id: 'acme', name: 'Acme Research Institute', color: '#0f766e', allowedDomains: [] },
+  { id: 'globex', name: 'Globex University', color: '#7c3aed', allowedDomains: [] },
+  ...(local.ssoTenant && ssoDomains.length ? [{ id: local.ssoTenant.id, name: local.ssoTenant.name, color: local.primary, allowedDomains: ssoDomains }] : []),
+];
+const demoUserEmail = (tenantId: string) => `${tenantId}.user@example.com`;
+
 const account = await assertAwsAccount();
 const lambda = new LambdaClient({ region: config.region });
 const t0 = Date.now();
@@ -77,9 +98,14 @@ const step = (s: string) => process.stdout.write(`  • ${s} … `);
 const done = (s = 'ready') => console.log(s);
 console.log(`▶ Registration demo (shared pool "${POOL_NAME}")`);
 
-// ---------- 1. Pre sign-up trigger: makes Affiliation mandatory on our own sign-up page ----------
+// ---------- 1. Triggers ----------
+// Pre sign-up: Affiliation mandatory on our own sign-up page
 step(`Lambda ${FN_NAME}`);
-const fnArn = await deployPreSignup();
+const fnArn = await deployFunction(FN_NAME, 'pre-signup', 'Cognito POC registration demo: Affiliation required on our own sign-up page');
+done();
+// Pre token: tenant/app claims and tenant membership check for the multi-tenant flow
+step(`Lambda ${TOKEN_FN}`);
+const tokenFnArn = await deployFunction(TOKEN_FN, 'demo-pre-token', 'Cognito POC registration demo: tenant claims, refuses users from other tenants');
 done();
 
 // ---------- 2. User pool (settings Cognito only accepts at creation are set here) ----------
@@ -111,7 +137,7 @@ if (poolId) {
       // Custom fields can't be required or shown on the hosted page; the pre sign-up trigger enforces it for our own page
       { Name: 'affiliation', AttributeDataType: 'String', Mutable: true, StringAttributeConstraints: { MinLength: '0', MaxLength: String(AFFILIATION_MAX) } },
     ],
-    LambdaConfig: { PreSignUp: fnArn },
+    LambdaConfig: { PreSignUp: fnArn, PreTokenGenerationConfig: { LambdaArn: tokenFnArn, LambdaVersion: 'V2_0' } },
     UserPoolTags: tags,
   });
   try {
@@ -189,7 +215,7 @@ async function client(name: string): Promise<string> {
       // aws.cognito.signin.user.admin lets the signed-in user save their own Affiliation
       AllowedOAuthScopes: ['openid', 'email', 'profile', 'aws.cognito.signin.user.admin'],
       CallbackURLs: origins.map((o) => `${o}/demo/callback`),
-      LogoutURLs: origins.map((o) => `${o}/demo`),
+      LogoutURLs: origins.flatMap((o) => [`${o}/demo`, `${o}/demo/tenants`]),
       SupportedIdentityProviders: microsoftIdp ? ['COGNITO', microsoftIdp] : ['COGNITO'],
       // USER_AUTH = choice-based sign-in (password, email code, passkey); SRP for password sign-in on our page
       ExplicitAuthFlows: ['ALLOW_USER_AUTH', 'ALLOW_USER_SRP_AUTH', 'ALLOW_REFRESH_TOKEN_AUTH'],
@@ -213,15 +239,78 @@ const ownClientId = await client(CLIENTS.own);
 
 // Only our own page must send Affiliation; hosted sign-ups add it after first sign-in
 step('Pre sign-up rule');
-await lambda.send(new UpdateFunctionConfigurationCommand({ FunctionName: FN_NAME, Environment: { Variables: { REQUIRE_AFFILIATION_CLIENTS: ownClientId } } }));
-await waitUntilFunctionUpdatedV2({ client: lambda, maxWaitTime: 120 }, { FunctionName: FN_NAME });
+await setEnv(FN_NAME, { REQUIRE_AFFILIATION_CLIENTS: ownClientId });
 done('Affiliation required on our own sign-up page');
+
+// ---------- 5b. Multi-tenant flow: three app clients per tenant, groups, demo users ----------
+const tenants: DemoTenant[] = [];
+const tenantApps: Record<string, TenantApp> = {};
+for (const t of TENANTS) {
+  const apps = [];
+  for (const a of DEMO_APPS) {
+    const clientId = await client(`tenant-${t.id}-${a.key}`);
+    apps.push({ ...a, clientId });
+    tenantApps[clientId] = { tenantId: t.id, tenantName: t.name, app: a.key, allowedDomains: t.allowedDomains };
+  }
+  for (const g of [`tenant_${t.id}`, `admin_${t.id}`]) {
+    await cognito.send(new CreateGroupCommand({ UserPoolId: poolId, GroupName: g, Description: `${t.name} ${g.startsWith('admin') ? 'admins' : 'members'}` })).catch((e) => {
+      if ((e as Error).name !== 'GroupExistsException') throw e;
+    });
+  }
+  const demoUsers = t.allowedDomains.length ? [] : [demoUserEmail(t.id)];
+  for (const email of demoUsers) {
+    step(`Demo user ${email}`);
+    const created = await cognito
+      .send(
+        new AdminCreateUserCommand({
+          UserPoolId: poolId,
+          Username: email,
+          MessageAction: 'SUPPRESS',
+          UserAttributes: [
+            { Name: 'email', Value: email },
+            { Name: 'email_verified', Value: 'true' },
+            { Name: 'given_name', Value: t.name.split(' ')[0] },
+            { Name: 'family_name', Value: 'User' },
+            { Name: 'custom:affiliation', Value: t.name },
+          ],
+        }),
+      )
+      .then(() => true)
+      .catch((e) => {
+        if ((e as Error).name !== 'UsernameExistsException') throw e;
+        return false;
+      });
+    await cognito.send(new AdminSetUserPasswordCommand({ UserPoolId: poolId, Username: email, Password: demoPassword(), Permanent: true }));
+    await cognito.send(new AdminAddUserToGroupCommand({ UserPoolId: poolId, Username: email, GroupName: `tenant_${t.id}` }));
+    done(created ? `created, member of ${t.name}` : `exists, member of ${t.name}`);
+  }
+  tenants.push({ ...t, apps, demoUsers });
+}
+step('Tenant rules');
+await setEnv(TOKEN_FN, { TENANT_APPS: JSON.stringify(tenantApps) });
+const pt = (await cognito.send(new DescribeUserPoolCommand({ UserPoolId: poolId }))).UserPool!.LambdaConfig?.PreTokenGenerationConfig;
+if (pt?.LambdaArn !== tokenFnArn) await setPoolTriggers({ PreTokenGenerationConfig: { LambdaArn: tokenFnArn, LambdaVersion: 'V2_0' } });
+done(`${Object.keys(tenantApps).length} tenant apps`);
+// Older demo clients only listed /demo as a logout address
+for (const id of [...Object.values(hostedClients), ownClientId]) {
+  const cur = (await cognito.send(new DescribeUserPoolClientCommand({ UserPoolId: poolId, ClientId: id }))).UserPoolClient!;
+  const want = origins.flatMap((o) => [`${o}/demo`, `${o}/demo/tenants`]);
+  if (want.every((u) => cur.LogoutURLs?.includes(u))) continue;
+  const { ClientSecret: _s, CreationDate: _c, LastModifiedDate: _m, ...rest } = cur;
+  await cognito.send(new UpdateUserPoolClientCommand({ ...rest, UserPoolId: poolId, ClientId: id, LogoutURLs: [...new Set([...(cur.LogoutURLs ?? []), ...want])] }));
+}
 
 // ---------- 6. Hosted page branding (one style per hosted product) ----------
 const brand: SignupDemoBrand = { nameAccent: local.nameAccent, nameRest: local.nameRest, accent: local.accent, primary: local.primary, panelColor: local.panelColor };
 for (const [label, id] of Object.entries(hostedClients)) {
   step(`Hosted page branding (${label})`);
   done(await brandHostedClient(id, label === 'product2' ? 'Product 2' : 'Product 1'));
+}
+for (const t of tenants) {
+  for (const a of t.apps) {
+    step(`Hosted page branding (${t.id} ${a.name})`);
+    done(await brandHostedClient(a.clientId, `${t.name} · ${a.name}`, t.color));
+  }
 }
 
 // ---------- 7. Registry row read by the web app ----------
@@ -241,6 +330,7 @@ const demo: SignupDemoConfig = {
   signInFactors,
   notes,
   brand,
+  tenants,
 };
 await ddb.send(new PutCommand({ TableName: outputs().TenantTable, Item: { tenantId: SIGNUP_DEMO_KEY, ...demo } }));
 writeJson('.poc/signup-demo.json', { ...demo, brand: { ...brand, illustration: brand.illustration ? '(embedded)' : undefined } });
@@ -253,28 +343,29 @@ if (microsoftIdp) console.log(`  Add this redirect URI to the Entra app registra
 
 // =====================================================================================
 
-async function deployPreSignup(): Promise<string> {
-  const dir = '.poc/build/pre-signup';
+/** Build one trigger from lambda/<entry>.ts and create or update its function. Returns the ARN. */
+async function deployFunction(name: string, entry: string, description: string): Promise<string> {
+  const dir = `.poc/build/${entry}`;
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
-  await build({ entryPoints: ['lambda/pre-signup.ts'], outfile: `${dir}/index.js`, bundle: true, platform: 'node', target: 'node22', format: 'cjs', minify: true, logLevel: 'error' });
+  await build({ entryPoints: [`lambda/${entry}.ts`], outfile: `${dir}/index.js`, bundle: true, platform: 'node', target: 'node22', format: 'cjs', minify: true, logLevel: 'error' });
   execFileSync('zip', ['-j', '-q', `${dir}.zip`, `${dir}/index.js`]);
   const ZipFile = readFileSync(`${dir}.zip`);
   rmSync(`${dir}.zip`);
 
-  const fn = await lambda.send(new GetFunctionCommand({ FunctionName: FN_NAME })).catch((e) => {
+  const fn = await lambda.send(new GetFunctionCommand({ FunctionName: name })).catch((e) => {
     if ((e as Error).name === 'ResourceNotFoundException') return undefined;
     throw e;
   });
   if (fn) {
-    await lambda.send(new UpdateFunctionCodeCommand({ FunctionName: FN_NAME, ZipFile }));
-    await waitUntilFunctionUpdatedV2({ client: lambda, maxWaitTime: 120 }, { FunctionName: FN_NAME });
+    await lambda.send(new UpdateFunctionCodeCommand({ FunctionName: name, ZipFile }));
+    await waitUntilFunctionUpdatedV2({ client: lambda, maxWaitTime: 120 }, { FunctionName: name });
   } else {
-    // Same execution role as the other triggers; this function reads nothing
+    // Same execution role as the other triggers; these functions read nothing
     const role = (await lambda.send(new GetFunctionCommand({ FunctionName: `${p}-pre-auth` }))).Configuration!.Role!;
     await lambda.send(
       new CreateFunctionCommand({
-        FunctionName: FN_NAME,
+        FunctionName: name,
         Runtime: 'nodejs22.x',
         Architectures: ['arm64'],
         Handler: 'index.handler',
@@ -282,29 +373,68 @@ async function deployPreSignup(): Promise<string> {
         Code: { ZipFile },
         MemorySize: 128,
         Timeout: 5,
-        Description: 'Cognito POC registration demo: Affiliation required on our own sign-up page',
+        Description: description,
         Tags: tags,
       }),
     );
-    await waitUntilFunctionActiveV2({ client: lambda, maxWaitTime: 120 }, { FunctionName: FN_NAME });
+    await waitUntilFunctionActiveV2({ client: lambda, maxWaitTime: 120 }, { FunctionName: name });
   }
   await lambda
-    .send(new AddPermissionCommand({ FunctionName: FN_NAME, StatementId: 'CognitoInvoke', Action: 'lambda:InvokeFunction', Principal: 'cognito-idp.amazonaws.com', SourceAccount: account }))
+    .send(new AddPermissionCommand({ FunctionName: name, StatementId: 'CognitoInvoke', Action: 'lambda:InvokeFunction', Principal: 'cognito-idp.amazonaws.com', SourceAccount: account }))
     .catch((e) => {
       if ((e as Error).name !== 'ResourceConflictException') throw e;
     });
-  return `arn:aws:lambda:${config.region}:${account}:function:${FN_NAME}`;
+  return `arn:aws:lambda:${config.region}:${account}:function:${name}`;
 }
 
-function logoSvg(subtitle: string): string {
+async function setEnv(name: string, Variables: Record<string, string>) {
+  await lambda.send(new UpdateFunctionConfigurationCommand({ FunctionName: name, Environment: { Variables } }));
+  await waitUntilFunctionUpdatedV2({ client: lambda, maxWaitTime: 120 }, { FunctionName: name });
+}
+
+/**
+ * Attach triggers to an existing pool. UpdateUserPool resets every setting it isn't given,
+ * so the current settings are read back and sent in full.
+ */
+async function setPoolTriggers(lambdaConfig: Record<string, unknown>) {
+  const cur = (await cognito.send(new DescribeUserPoolCommand({ UserPoolId: poolId! }))).UserPool!;
+  await cognito.send(
+    new UpdateUserPoolCommand({
+      UserPoolId: poolId!,
+      PoolName: cur.Name,
+      UserPoolTier: cur.UserPoolTier,
+      Policies: cur.Policies,
+      DeletionProtection: cur.DeletionProtection,
+      LambdaConfig: { ...cur.LambdaConfig, ...lambdaConfig },
+      AutoVerifiedAttributes: cur.AutoVerifiedAttributes,
+      VerificationMessageTemplate: cur.VerificationMessageTemplate,
+      UserAttributeUpdateSettings: cur.UserAttributeUpdateSettings,
+      MfaConfiguration: cur.MfaConfiguration,
+      DeviceConfiguration: cur.DeviceConfiguration,
+      EmailConfiguration: cur.EmailConfiguration,
+      SmsConfiguration: cur.SmsConfiguration,
+      UserPoolTags: cur.UserPoolTags,
+      AdminCreateUserConfig: cur.AdminCreateUserConfig,
+      UserPoolAddOns: cur.UserPoolAddOns,
+      AccountRecoverySetting: cur.AccountRecoverySetting,
+    }),
+  );
+  const after = (await cognito.send(new DescribeUserPoolCommand({ UserPoolId: poolId! }))).UserPool!;
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  if (!same(after.Policies, cur.Policies) || after.MfaConfiguration !== cur.MfaConfiguration || !same(after.AdminCreateUserConfig, cur.AdminCreateUserConfig)) {
+    throw new Error('Pool settings changed unexpectedly while attaching triggers; check the pool in the console.');
+  }
+}
+
+function logoSvg(subtitle: string, subtitleColor = '#5b6270'): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-  // 240 × 96 (2.5:1, inside Cognito's 1:1–4:1 logo limit); tight edges so the text renders large
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="96" viewBox="0 0 240 96">
-  <g transform="translate(103 1) scale(0.85)" fill="none" stroke="${local.accent}" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round">
+  // 300 × 100 (3:1, inside Cognito's 1:1–4:1 logo limit); wide enough for "Tenant · App"
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100" viewBox="0 0 300 100">
+  <g transform="translate(133 1) scale(0.85)" fill="none" stroke="${local.accent}" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round">
     <path d="M6 2h20l10 10v30a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4z"/><path d="M26 2v10h10"/><path d="M10 27h16m-6-6 6 6-6 6"/>
   </g>
-  <text x="120" y="70" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700"><tspan fill="${local.accent}">${esc(local.nameAccent)}</tspan><tspan fill="#111111">${esc(local.nameRest)}</tspan></text>
-  <text x="120" y="92" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="600" fill="#5b6270">${esc(subtitle)}</text>
+  <text x="150" y="70" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700"><tspan fill="${local.accent}">${esc(local.nameAccent)}</tspan><tspan fill="#111111">${esc(local.nameRest)}</tspan></text>
+  <text x="150" y="93" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="${subtitleColor}">${esc(subtitle)}</text>
 </svg>`;
 }
 
@@ -313,7 +443,7 @@ function faviconSvg(): string {
 }
 
 type Json = Record<string, any>;
-async function brandHostedClient(clientId: string, subtitle: string): Promise<string> {
+async function brandHostedClient(clientId: string, subtitle: string, primary = local.primary): Promise<string> {
   const ex = await cognito.send(new DescribeManagedLoginBrandingByClientCommand({ UserPoolId: poolId!, ClientId: clientId })).catch(() => undefined);
   const oldId = ex?.ManagedLoginBranding?.ManagedLoginBrandingId;
   if (oldId) await cognito.send(new DeleteManagedLoginBrandingCommand({ UserPoolId: poolId!, ManagedLoginBrandingId: oldId }));
@@ -324,7 +454,7 @@ async function brandHostedClient(clientId: string, subtitle: string): Promise<st
   const s: Json = structuredClone(defaults);
   const defaultPrimary = String(s.components?.primaryButton?.lightMode?.defaults?.backgroundColor ?? '').toLowerCase();
   const swap = (o: any): any =>
-    typeof o === 'string' ? (o.toLowerCase() === defaultPrimary ? cognitoColor(local.primary) : o) : Array.isArray(o) ? o.map(swap) : o && typeof o === 'object' ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, swap(v)])) : o;
+    typeof o === 'string' ? (o.toLowerCase() === defaultPrimary ? cognitoColor(primary) : o) : Array.isArray(o) ? o.map(swap) : o && typeof o === 'object' ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, swap(v)])) : o;
   const out: Json = defaultPrimary ? swap(s) : s;
   out.categories.global.colorSchemeMode = 'LIGHT';
   out.components.pageBackground.lightMode.color = 'ffffffff';
@@ -336,7 +466,7 @@ async function brandHostedClient(clientId: string, subtitle: string): Promise<st
 
   const svg = (x: string) => new TextEncoder().encode(x);
   const assets: AssetType[] = [
-    { Category: 'FORM_LOGO', ColorMode: 'LIGHT', Extension: 'SVG', Bytes: svg(logoSvg(subtitle)) },
+    { Category: 'FORM_LOGO', ColorMode: 'LIGHT', Extension: 'SVG', Bytes: svg(logoSvg(subtitle, primary === local.primary ? undefined : primary)) },
     { Category: 'FAVICON_SVG', ColorMode: 'LIGHT', Extension: 'SVG', Bytes: svg(faviconSvg()) },
   ];
   if (local.hostedBackground && existsSync(local.hostedBackground)) {

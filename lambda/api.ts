@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { authenticate, AuthError } from './auth';
 import { allTenants, saveTheme, signupDemoConfig, tenantById } from './registry';
+import { demoTenantData } from './demo-tenant-api';
 import { faviconSvg, logoSvg } from '../shared/branding-assets';
 import { validateThemeUpdate, type ThemeUpdate } from '../shared/theme';
 import type { PublicTenantConfig, TenantRecord } from '../shared/types';
@@ -54,6 +55,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     if (method !== 'GET') return json(405, { error: 'method_not_allowed' });
+
+    // ---- Registration demo, multi-tenant flow: GET /demo-tenants/{tenant}/data ----
+    if (parts[0] === 'demo-tenants' && parts.length === 3 && parts[2] === 'data') {
+      const r = await demoTenantData(parts[1], event.headers.authorization);
+      return json(r.status, r.body);
+    }
 
     // ---- Public (no auth): registration demo settings (pool, clients, brand) ----
     if (parts[0] === 'public' && parts[1] === 'signup-demo' && parts.length === 2) {
