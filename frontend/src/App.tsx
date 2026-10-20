@@ -12,6 +12,7 @@ import { OwnRegister } from './demo/OwnRegister';
 import { OwnSignIn } from './demo/OwnSignIn';
 import { DemoTenants } from './demo/DemoTenants';
 import { DevOpsGuide } from './demo/DevOpsGuide';
+import { DevGuide } from './demo/DevGuide';
 import type { ModuleId } from './lib';
 
 function usePath() {
@@ -32,7 +33,7 @@ function usePath() {
  *   /t/:tenantId/admin/branding    login theme editor (scenario C, tenant admins)
  *   /t/:tenantId/m/:module         signed-in module: tokens + API console
  *   /callback                      OIDC redirect URI shared by all clients
- *   /demo, /demo/register, /demo/login, /demo/account, /demo/callback, /demo/tenants, /demo/tenants-own, /demo/guide
+ *   /demo, /demo/register, /demo/login, /demo/account, /demo/callback, /demo/tenants, /demo/tenants-own, /demo/guide, /demo/guide/dev
  *                                  registration demo (one shared pool, hosted vs own pages)
  * With a real domain the tenant would come from the subdomain (acme.ourapp.com) instead.
  */
@@ -49,6 +50,7 @@ export function App() {
   if (path === '/demo/tenants') return <DemoTenants key={full} />;
   if (path === '/demo/tenants-own') return <DemoTenants key={full} own />;
   if (path === '/demo/guide') return <DevOpsGuide />;
+  if (path === '/demo/guide/dev') return <DevGuide />;
   const m = path.match(/^\/t\/([a-z0-9-]+)(?:\/(login|admin\/branding|m\/(module[123])))?\/?$/);
   if (m) {
     if (m[2] === 'login') return <OwnLogin key={full} tenantId={m[1]} />;

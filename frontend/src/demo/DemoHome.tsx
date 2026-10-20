@@ -49,7 +49,10 @@ export function DemoHome() {
           {c.ssoDomains.length > 0 && <li>Work-email SSO ({c.ssoDomains.map((d) => '@' + d).join(', ')})</li>}
         </ul>
         {c.notes.map((n) => <p key={n} className="demo-note">{n}</p>)}
-        <p className="small"><a href="/demo/guide">DevOps guide: what to decide and prepare before creating the user pool →</a></p>
+        <p className="small guide-links">
+          <a href="/demo/guide">DevOps guide: what to decide and prepare before creating the user pool →</a>
+          <a href="/demo/guide/dev">Developer guide: building the pages and Lambda triggers →</a>
+        </p>
       </header>
 
       {signedIn.length > 0 && (

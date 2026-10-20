@@ -27,6 +27,7 @@ export function DevOpsGuide() {
           For setting up Cognito for registration and login, with Cognito's hosted pages or our own pages. Some pool settings
           can never be changed after creation, so read sections 1 and 5 before creating anything.
         </p>
+        <p className="small"><a href="/demo/guide/dev">Developer guide: building the pages and Lambda triggers →</a></p>
       </header>
 
       <nav className="guide-toc" aria-label="Sections">
@@ -206,7 +207,7 @@ export function DevOpsGuide() {
   );
 }
 
-function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+export function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
     <section id={id} className="guide-section">
       <h2>{title}</h2>
@@ -215,7 +216,7 @@ function Section({ id, title, children }: { id: string; title: string; children:
   );
 }
 
-function Table({ head, rows }: { head: ReactNode[]; rows: ReactNode[][] }) {
+export function Table({ head, rows }: { head: ReactNode[]; rows: ReactNode[][] }) {
   return (
     <div className="table-scroll">
       <table className="guide-table">
@@ -226,6 +227,6 @@ function Table({ head, rows }: { head: ReactNode[]; rows: ReactNode[][] }) {
   );
 }
 
-function Note({ children }: { children: ReactNode }) {
+export function Note({ children }: { children: ReactNode }) {
   return <p className="guide-note">{children}</p>;
 }
