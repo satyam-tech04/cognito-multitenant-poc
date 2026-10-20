@@ -34,6 +34,7 @@ import {
   UpdateUserPoolClientCommand,
   UpdateUserPoolCommand,
   type AssetType,
+  type VerificationMessageTemplateType,
   type CreateUserPoolCommandInput,
 } from '@aws-sdk/client-cognito-identity-provider';
 import {
@@ -67,6 +68,8 @@ interface LocalBrand {
   ssoDomains?: string[];
   /** Optional third tenant whose members sign in with Microsoft (email domain = ssoDomains) */
   ssoTenant?: { id: string; name: string };
+  /** Verification email wording (optional overrides) */
+  email?: { subject?: string; intro?: string; footer?: string };
 }
 
 const p = config.resourcePrefix;
@@ -299,7 +302,7 @@ await setEnv(FN_NAME, {
   TENANT_CLIENTS: JSON.stringify(Object.fromEntries(Object.entries(tenantApps).map(([id, a]) => [id, a.tenantId]))),
 });
 const pt = (await cognito.send(new DescribeUserPoolCommand({ UserPoolId: poolId }))).UserPool!.LambdaConfig?.PreTokenGenerationConfig;
-if (pt?.LambdaArn !== tokenFnArn) await setPoolTriggers({ PreTokenGenerationConfig: { LambdaArn: tokenFnArn, LambdaVersion: 'V2_0' } });
+if (pt?.LambdaArn !== tokenFnArn) await updatePool({ LambdaConfig: { PreTokenGenerationConfig: { LambdaArn: tokenFnArn, LambdaVersion: 'V2_0' } } });
 done(`${Object.keys(tenantApps).length} tenant apps`);
 // Clients created by earlier runs: add newer logout addresses and attribute permissions
 for (const id of [...Object.values(hostedClients), ownClientId, ...Object.keys(tenantApps)]) {
@@ -319,6 +322,17 @@ for (const id of [...Object.values(hostedClients), ownClientId, ...Object.keys(t
     }),
   );
 }
+
+// ---------- 5c. Branded verification email (pool message template, no Lambda, no SES) ----------
+// Used for the 6-digit sign-up confirmation, resend, and password-reset codes. Editable later in the
+// Cognito console (Messaging → Message templates → Verification message) or via config/signup-demo.local.json.
+// The 8-digit sign-in code email can't be changed without Amazon SES (see notes).
+step('Verification email template');
+const template = verificationEmail();
+await updatePool({ VerificationMessageTemplate: { DefaultEmailOption: 'CONFIRM_WITH_CODE', EmailSubject: template.subject, EmailMessage: template.html } });
+done(`"${template.subject}" (${template.html.length} characters)`);
+if (!notes.some((n) => n.startsWith('Sign-in code email')))
+  notes.push('Sign-in code email (8 digits) uses Cognito\'s default wording: branding it needs Amazon SES plus a custom message trigger.');
 
 // ---------- 6. Hosted page branding (one style per hosted product) ----------
 const brand: SignupDemoBrand = { nameAccent: local.nameAccent, nameRest: local.nameRest, accent: local.accent, primary: local.primary, panelColor: local.panelColor };
@@ -413,10 +427,10 @@ async function setEnv(name: string, Variables: Record<string, string>) {
 }
 
 /**
- * Attach triggers to an existing pool. UpdateUserPool resets every setting it isn't given,
- * so the current settings are read back and sent in full.
+ * Change pool settings after creation. UpdateUserPool resets every setting it isn't given,
+ * so the current settings are read back and sent in full, with only the patch applied.
  */
-async function setPoolTriggers(lambdaConfig: Record<string, unknown>) {
+async function updatePool(patch: { LambdaConfig?: Record<string, unknown>; VerificationMessageTemplate?: VerificationMessageTemplateType }) {
   const cur = (await cognito.send(new DescribeUserPoolCommand({ UserPoolId: poolId! }))).UserPool!;
   await cognito.send(
     new UpdateUserPoolCommand({
@@ -425,9 +439,9 @@ async function setPoolTriggers(lambdaConfig: Record<string, unknown>) {
       UserPoolTier: cur.UserPoolTier,
       Policies: cur.Policies,
       DeletionProtection: cur.DeletionProtection,
-      LambdaConfig: { ...cur.LambdaConfig, ...lambdaConfig },
+      LambdaConfig: { ...cur.LambdaConfig, ...patch.LambdaConfig },
       AutoVerifiedAttributes: cur.AutoVerifiedAttributes,
-      VerificationMessageTemplate: cur.VerificationMessageTemplate,
+      VerificationMessageTemplate: patch.VerificationMessageTemplate ?? cur.VerificationMessageTemplate,
       UserAttributeUpdateSettings: cur.UserAttributeUpdateSettings,
       MfaConfiguration: cur.MfaConfiguration,
       DeviceConfiguration: cur.DeviceConfiguration,
@@ -442,8 +456,29 @@ async function setPoolTriggers(lambdaConfig: Record<string, unknown>) {
   const after = (await cognito.send(new DescribeUserPoolCommand({ UserPoolId: poolId! }))).UserPool!;
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   if (!same(after.Policies, cur.Policies) || after.MfaConfiguration !== cur.MfaConfiguration || !same(after.AdminCreateUserConfig, cur.AdminCreateUserConfig)) {
-    throw new Error('Pool settings changed unexpectedly while attaching triggers; check the pool in the console.');
+    throw new Error('Pool settings changed unexpectedly while updating the pool; check the pool in the console.');
   }
+}
+
+/** Email-safe HTML (tables, inline styles). Must contain {####}; Cognito allows 20,000 characters. */
+function verificationEmail(): { subject: string; html: string } {
+  const esc = (x: string) => x.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const name = `${local.nameAccent}${local.nameRest}`;
+  const e = local.email ?? {};
+  const subject = e.subject ?? `Your ${name} verification code`;
+  const intro = e.intro ?? `Use this code to verify your email address for ${name}:`;
+  const footer = e.footer ?? `If you didn't ask for this code, you can ignore this email.`;
+  const html = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:24px 12px;font-family:Arial,Helvetica,sans-serif">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:8px;border-top:4px solid ${local.primary}">
+<tr><td style="padding:28px 28px 8px;font-size:22px;font-weight:bold"><span style="color:${local.accent}">${esc(local.nameAccent)}</span><span style="color:#111111">${esc(local.nameRest)}</span></td></tr>
+<tr><td style="padding:8px 28px;font-size:15px;line-height:22px;color:#333333">${esc(intro)}</td></tr>
+<tr><td style="padding:8px 28px 16px"><div style="font-size:30px;letter-spacing:8px;font-weight:bold;color:${local.primary};background:#eef3fd;border-radius:6px;padding:14px 0;text-align:center">{####}</div></td></tr>
+<tr><td style="padding:0 28px 28px;font-size:13px;line-height:20px;color:#666666">${esc(footer)}</td></tr>
+</table>
+<p style="font-size:11px;color:#999999;margin:16px 0 0">${esc(name)}</p>
+</td></tr></table>`;
+  return { subject, html };
 }
 
 function logoSvg(subtitle: string, subtitleColor = '#5b6270'): string {
