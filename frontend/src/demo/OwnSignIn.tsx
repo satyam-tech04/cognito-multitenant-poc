@@ -27,8 +27,12 @@ export function OwnSignIn() {
   if (!c) return <main className="demo">{problem ? <div className="card error">{problem}</div> : <div className="spinner" />}</main>;
 
   const otp = c.signInFactors.includes('EMAIL_OTP');
-  const ssoDomain = ssoDomainOf(c, email);
   const ta = tenantAppOf(c, app);
+  // Work-email routing to Microsoft: on a tenant app, only for domains that tenant signs in with Microsoft.
+  // Otherwise a password member of Acme with a work address would be sent to Microsoft, which is a
+  // different Cognito user and not an Acme member.
+  const domain = ssoDomainOf(c, email);
+  const ssoDomain = domain && (!ta || ta.tenant.allowedDomains.includes(domain)) ? domain : undefined;
   const done = ta ? tenantPageFor(app) : '/demo/account?app=own';
   const showMicrosoft = Boolean(c.microsoftIdp) && (!ta || ta.tenant.allowedDomains.length > 0);
   const run = async (fn: () => Promise<void>) => {

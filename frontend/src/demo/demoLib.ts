@@ -166,7 +166,7 @@ export async function hostedSignIn(c: SignupDemoConfig, app: AppKey, o: HostedOp
   if (isTenantKey(app)) {
     logFlow(
       'go',
-      isOwnTenantKey(app) ? `Our page → ${o.idp ?? 'identity provider'} for ${labelOf(c, app)}` : `Open ${labelOf(c, app)}`,
+      isOwnTenantKey(app) ? `Our page → ${o.idp ?? `Microsoft (work-email single sign-on for @${o.idpIdentifier})`} for ${labelOf(c, app)}` : `Open ${labelOf(c, app)}`,
       `Browser → Cognito /oauth2/authorize · client_id=${clientIdOf(c, app)} · response_type=code · PKCE S256${o.idp ? ` · identity_provider=${o.idp} (Cognito's page is skipped)` : ''}`,
     );
   }
