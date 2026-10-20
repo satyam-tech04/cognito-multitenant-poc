@@ -50,6 +50,7 @@ export function DemoHome() {
         </ul>
         {c.notes.map((n) => <p key={n} className="demo-note">{n}</p>)}
         <p className="small guide-links">
+          <a href="/demo/architecture">Architecture overview: how it all fits, scenarios and limitations →</a>
           <a href="/demo/guide">DevOps guide: what to decide and prepare before creating the user pool →</a>
           <a href="/demo/guide/dev">Developer guide: building the pages and Lambda triggers →</a>
         </p>
