@@ -40,3 +40,22 @@ describe('pre sign-up: Affiliation', () => {
     assert.equal(await handler(e), e);
   });
 });
+
+describe('pre sign-up: tenant registration (flow D)', () => {
+  process.env.TENANT_CLIENTS = JSON.stringify({ 'acme-app1': 'acme', 'globex-app1': 'globex' });
+  const reg = (clientId: string, tenant: string, affiliation = 'Uni') =>
+    ({ triggerSource: 'PreSignUp_SignUp', callerContext: { clientId }, request: { userAttributes: { 'custom:tenant_id': tenant, 'custom:affiliation': affiliation } }, response: {} }) as unknown as PreSignUpTriggerEvent;
+  it("accepts joining the app's own tenant", async () => {
+    const e = reg('acme-app1', 'acme');
+    assert.equal(await handler(e), e);
+  });
+  it("refuses joining another tenant through this tenant's app", async () => {
+    await assert.rejects(handler(reg('acme-app1', 'globex')), /only join its own tenant/);
+  });
+  it('refuses a tenant tag from an app that is not a tenant app', async () => {
+    await assert.rejects(handler(reg('hosted-client', 'acme')), /does not belong to a tenant/);
+  });
+  it('requires Affiliation for tenant registration', async () => {
+    await assert.rejects(handler(reg('acme-app1', 'acme', '')), /Affiliation is required/);
+  });
+});

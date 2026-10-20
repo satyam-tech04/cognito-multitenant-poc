@@ -41,3 +41,13 @@ describe('demo pre-token: tenant apps', () => {
     assert.equal(claimsOf(e), undefined);
   });
 });
+
+describe('demo pre-token: registered through a tenant app (flow D)', () => {
+  it('treats the tenant tag set at registration as membership', async () => {
+    const e = await handler(event('acme-app1', [], { email: 'new@example.com', 'custom:tenant_id': 'acme' }));
+    assert.equal(claimsOf(e)?.tenant_id, 'acme');
+  });
+  it("refuses a user registered in another tenant", async () => {
+    await assert.rejects(handler(event('globex-app2', [], { email: 'new@example.com', 'custom:tenant_id': 'acme' })), /does not have access to Globex/);
+  });
+});

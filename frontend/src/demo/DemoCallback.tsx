@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { navigate } from '../lib';
-import { clearPending, completeHostedSignIn, isTenantKey, logFlow, pendingApp } from './demoLib';
+import { clearPending, completeHostedSignIn, isTenantKey, logFlow, pendingApp, tenantPageFor } from './demoLib';
 
 /** /demo/callback: Cognito sends the browser back here after the hosted pages or Microsoft */
 export function DemoCallback() {
@@ -12,30 +12,30 @@ export function DemoCallback() {
     once.current = true;
     const qs = new URLSearchParams(window.location.search);
     const app = pendingApp();
-    const tenantId = app && isTenantKey(app) ? app.split(':')[0] : undefined;
+    const tenantPage = app && isTenantKey(app) ? tenantPageFor(app) : undefined;
     if (qs.get('error')) {
       const why = (qs.get('error_description') ?? qs.get('error') ?? '').replace(/^PreTokenGeneration(V2_0)? failed with error /, '').replace(/\.+\s*$/, '.');
-      if (tenantId) {
+      if (tenantPage) {
         // A refused tenant sign-in is part of the demo: log it and go back to the tenant page
         logFlow('back', 'Back at /demo/callback with an error instead of a code', `error=${qs.get('error')}`);
         logFlow('refused', 'Sign-in refused by the pre-token check', why);
         clearPending();
-        navigate(`/demo/tenants?tenant=${tenantId}`);
+        navigate(tenantPage);
         return;
       }
       setError(why);
       return;
     }
     completeHostedSignIn()
-      .then((done) => navigate(isTenantKey(done) ? `/demo/tenants?tenant=${done.split(':')[0]}` : `/demo/account?app=${done}`))
+      .then((done) => navigate(isTenantKey(done) ? tenantPageFor(done) : `/demo/account?app=${done}`))
       .catch((e: Error) => {
         // With single sign-on Cognito issues a code first; the pre-token check then refuses the token exchange
         const m = /failed with error (.+?)\.*\s*\(Service:/.exec(e.message) ?? /failed with error (.+?)\.*$/.exec(e.message);
-        if (tenantId && m) {
+        if (tenantPage && m) {
           logFlow('token', 'Token exchange at /oauth2/token refused', 'Cognito reused the session and issued a code, then ran the pre-token check');
           logFlow('refused', 'Sign-in refused by the pre-token check', `${m[1]}.`);
           clearPending();
-          navigate(`/demo/tenants?tenant=${tenantId}`);
+          navigate(tenantPage);
           return;
         }
         setError(e.message);

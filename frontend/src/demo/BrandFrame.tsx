@@ -25,7 +25,14 @@ export function BrandLogo({ brand }: { brand: SignupDemoConfig['brand'] }) {
 }
 
 /** Our own pages (B): illustration on the left, form on the right, like the product's current sign-up page */
-export function BrandFrame({ config, children }: { config: SignupDemoConfig; children: ReactNode }) {
+export function BrandFrame({ config, children, subtitle, subtitleColor, back = { href: '/demo', label: 'Back to the demo overview' } }: {
+  config: SignupDemoConfig;
+  children: ReactNode;
+  /** Tenant flow: which tenant and app this page signs in to */
+  subtitle?: string;
+  subtitleColor?: string;
+  back?: { href: string; label: string };
+}) {
   const b = config.brand;
   useEffect(() => {
     document.title = `${b.nameAccent}${b.nameRest}`;
@@ -37,9 +44,10 @@ export function BrandFrame({ config, children }: { config: SignupDemoConfig; chi
       <main className="bf-main">
         <div className="bf-card">
           <BrandLogo brand={b} />
+          {subtitle && <p className="bf-tenant" style={{ color: subtitleColor }}>{subtitle}</p>}
           {children}
         </div>
-        <a className="bf-demo-link" href="/demo">← Back to the demo overview</a>
+        <a className="bf-demo-link" href={back.href}>← {back.label}</a>
       </main>
     </div>
   );

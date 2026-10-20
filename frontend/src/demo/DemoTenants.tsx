@@ -3,6 +3,8 @@ import { applyTheme, decodeJwt, navigate } from '../lib';
 import { MicrosoftLogo } from './BrandFrame';
 import {
   callTenantApi,
+  labelOf,
+  logFlow,
   clearFlow,
   flowSteps,
   getSession,
@@ -17,7 +19,7 @@ import {
 } from './demoLib';
 
 const KIND_LABEL: Record<FlowStep['kind'], string> = {
-  go: 'Redirect',
+  go: 'Request',
   back: 'Callback',
   token: 'Tokens',
   sso: 'SSO',
@@ -27,8 +29,13 @@ const KIND_LABEL: Record<FlowStep['kind'], string> = {
   info: 'Info',
 };
 
-/** /demo/tenants: tenants share one pool, each with three app clients; live log of every step */
-export function DemoTenants() {
+/**
+ * Multi-tenant flows: tenants share one pool, each with three app clients; live log of every step.
+ *   /demo/tenants       C · Cognito's hosted login pages (single sign-on between a tenant's apps)
+ *   /demo/tenants-own   D · our own login and registration pages (API sign-in, no shared session)
+ */
+export function DemoTenants({ own = false }: { own?: boolean }) {
+  const base = own ? '/demo/tenants-own' : '/demo/tenants';
   const [c, setC] = useState<SignupDemoConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tenantId, setTenantId] = useState(new URLSearchParams(window.location.search).get('tenant') ?? '');
@@ -43,7 +50,7 @@ export function DemoTenants() {
 
   useEffect(() => {
     applyTheme(null);
-    document.title = 'Multi-tenant flow · Registration demo';
+    document.title = `Multi-tenant flow ${own ? 'D' : 'C'} · Registration demo`;
     loadDemo()
       .then((cfg) => {
         setC(cfg);
@@ -62,22 +69,46 @@ export function DemoTenants() {
 
   const tenant = tenants.find((t) => t.id === tenantId) ?? tenants[0];
   const others = tenants.filter((t) => t.id !== tenant.id);
-  const anySignedIn = tenants.some((t) => t.apps.some((a) => getSession(tenantKey(t.id, a.key))));
+  const keyOf = (t: DemoTenant, app: string) => tenantKey(t.id, app, own);
+  const anySignedIn = tenants.some((t) => t.apps.some((a) => getSession(keyOf(t, a.key))));
   const pickTenant = (id: string) => {
     setTenantId(id);
-    window.history.replaceState({}, '', `/demo/tenants?tenant=${id}`);
+    window.history.replaceState({}, '', `${base}?tenant=${id}`);
+  };
+  /** D: open our own sign-in page for this app; note that there's no session to reuse */
+  const openOwn = (key: AppKey, page: 'login' | 'register') => {
+    const signedInElsewhere = tenant.apps.some((x) => keyOf(tenant, x.key) !== key && getSession(keyOf(tenant, x.key)));
+    if (page === 'login' && signedInElsewhere) {
+      logFlow('info', 'No single sign-on on our own pages', "Our pages call Cognito's API directly, so Cognito never sets its session cookie. Each app client signs in on its own.");
+    }
+    logFlow('go', `Our ${page === 'login' ? 'sign-in' : 'registration'} page for ${labelOf(c, key)}`, `No redirect to Cognito: the page calls the Cognito API with client_id=${tenant.apps.find((x) => keyOf(tenant, x.key) === key)?.clientId}`);
+    navigate(`/demo/${page}?app=${key}`);
   };
 
   return (
     <main className="demo mt">
       <a className="bf-demo-link" href="/demo">← Demo overview</a>
       <header className="demo-head">
-        <p className="eyebrow">Amazon Cognito · Multi-tenant flow on one shared user pool</p>
+        <p className="eyebrow">
+          <span className={`demo-tag ${own ? 'd' : 'c'} inline`}>{own ? 'D' : 'C'}</span>
+          Amazon Cognito · Multi-tenant flow with {own ? 'our own login and registration pages' : "Cognito's hosted login pages"}
+        </p>
         <h1>{tenants.length} tenants, 3 apps each</h1>
-        <p className="muted">
-          Every tenant has three apps, and each app is its own Cognito app client with its own login page. Sign in to one
-          app and the tenant's other apps open without a password. A user from another tenant is refused, and the API only
-          returns data for the tenant in the token.
+        {own ? (
+          <p className="muted">
+            The same tenants and app clients as flow C, but sign-in and registration happen on our own pages, which call
+            Cognito's API. Registering through a tenant's app makes you a member of that tenant. Other tenants are refused at
+            sign-in and in the API. There is no single sign-on: each app signs in on its own.
+          </p>
+        ) : (
+          <p className="muted">
+            Every tenant has three apps, and each app is its own Cognito app client with its own login page. Sign in to one
+            app and the tenant's other apps open without a password. A user from another tenant is refused, and the API only
+            returns data for the tenant in the token.
+          </p>
+        )}
+        <p className="small">
+          <a href={own ? '/demo/tenants' : '/demo/tenants-own'}>{own ? "Compare with flow C (Cognito's hosted pages) →" : 'Compare with flow D (our own login and registration pages) →'}</a>
         </p>
       </header>
 
@@ -96,12 +127,12 @@ export function DemoTenants() {
 
           <div className="mt-apps">
             {tenant.apps.map((a, i) => {
-              const key = tenantKey(tenant.id, a.key);
+              const key = keyOf(tenant, a.key);
               const s = getSession(key);
               const claims = s ? decodeJwt(s.accessToken) : undefined;
               const id = s ? decodeJwt(s.idToken) : undefined;
               return (
-                <section key={a.key} className={`mt-app${s ? ' signed' : ''}`} style={{ ['--t' as string]: tenant.color }}>
+                <section key={a.key} className={`mt-app${s ? ' is-signed' : ''}`} style={{ ['--t' as string]: tenant.color }}>
                   <p className="mt-app-n">App {i + 1}</p>
                   <h3>{a.name}</h3>
                   <p className="mono mt-client">client_id {a.clientId}</p>
@@ -129,7 +160,16 @@ export function DemoTenants() {
                     <>
                       <p className="mt-state">Not signed in</p>
                       <div className="mt-app-actions">
-                        <button className="btn" onClick={() => hostedSignIn(c, key, { method: 'Hosted sign-in page' })}>Open {a.name}</button>
+                        {own ? (
+                          <>
+                            <button className="btn" onClick={() => openOwn(key, 'login')}>Sign in to {a.name}</button>
+                            {tenant.demoUsers.length > 0 && (
+                              <button className="btn ghost" onClick={() => openOwn(key, 'register')}>Create account</button>
+                            )}
+                          </>
+                        ) : (
+                          <button className="btn" onClick={() => hostedSignIn(c, key, { method: 'Hosted sign-in page' })}>Open {a.name}</button>
+                        )}
                         {c.microsoftIdp && tenant.allowedDomains.length > 0 && (
                           <button className="btn ghost" onClick={() => hostedSignIn(c, key, { idp: c.microsoftIdp, method: 'Microsoft' })}>
                             <MicrosoftLogo /> Microsoft
@@ -145,6 +185,17 @@ export function DemoTenants() {
 
           <section className="mt-try">
             <h2>What to show</h2>
+            {own ? (
+            <ol className="demo-steps">
+              <li><b>Register into a tenant:</b> on {tenant.name}'s first app choose <i>Create account</i>. Our registration page sends <code>custom:tenant_id={tenant.id}</code>; the pre sign-up check confirms it is this app's tenant, then Cognito emails the 6-digit code.</li>
+              <li><b>Sign in on our page:</b> password (SRP) or an emailed code. The panel shows the Cognito API calls and the tenant claims.</li>
+              <li><b>No single sign-on:</b> open the second app. Our page asks again, because API sign-ins create no Cognito session to reuse.</li>
+              <li><b>Tenant isolation in the API:</b> call the API for your own tenant (200), then for another tenant (403 wrong_tenant).</li>
+              {others[0] && (
+                <li><b>Tenant isolation at sign-in:</b> switch to {others[0].name} and sign in with the same account. The pre-token check refuses it.</li>
+              )}
+            </ol>
+            ) : (
             <ol className="demo-steps">
               <li><b>Sign in once:</b> open {tenant.name}'s first app and sign in. The flow panel shows the redirect, the callback, the token exchange and the tenant claims.</li>
               <li><b>Single sign-on:</b> open the second and third apps. No login page appears; the panel says "Single sign-on".</li>
@@ -153,11 +204,12 @@ export function DemoTenants() {
                 <li><b>Tenant isolation at sign-in:</b> switch to {others[0].name} and open an app. Cognito reuses your session, but the pre-token check refuses the account because it isn't a member.</li>
               )}
             </ol>
+            )}
           </section>
 
           {anySignedIn && (
             <button className="btn ghost" onClick={() => {
-              const first = tenants.flatMap((t) => t.apps.map((a) => tenantKey(t.id, a.key))).find((k) => getSession(k)) as AppKey;
+              const first = tenants.flatMap((t) => t.apps.map((a) => keyOf(t, a.key))).find((k) => getSession(k)) as AppKey;
               void signOut(c, first);
             }}>
               Sign out of every app
@@ -171,7 +223,11 @@ export function DemoTenants() {
             {steps.length > 0 && <button className="bf-link" onClick={clearFlow}>Clear</button>}
           </div>
           {steps.length === 0 ? (
-            <p className="muted small">Open an app to see each step: the redirect to Cognito, the callback, the token exchange, single sign-on and API checks.</p>
+            <p className="muted small">
+              {own
+                ? 'Sign in or register on an app to see each step: the Cognito API calls, the pre sign-up and pre-token checks, the tenant claims and API checks.'
+                : 'Open an app to see each step: the redirect to Cognito, the callback, the token exchange, single sign-on and API checks.'}
+            </p>
           ) : (
             <ol className="mt-steps">
               {steps.map((s, i) => (

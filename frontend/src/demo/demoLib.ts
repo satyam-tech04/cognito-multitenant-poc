@@ -14,16 +14,22 @@ export { AFFILIATION_ATTR, AFFILIATION_MAX } from '../../../shared/signup-demo';
 
 /**
  * product1 / product2 = hosted pages on two app clients (to show SSO); own = our own pages;
- * "<tenant>:<app>" = one of a tenant's three app clients (multi-tenant flow)
+ * "<tenant>:<app>"     = one of a tenant's three app clients, signed in on Cognito's hosted pages (flow C)
+ * "own/<tenant>:<app>" = the same app client, signed in on our own pages (flow D)
  */
 export type AppKey = 'product1' | 'product2' | 'own' | `${string}:app${1 | 2 | 3}`;
 export const APP_LABEL: Record<'product1' | 'product2' | 'own', string> = { product1: 'Product 1', product2: 'Product 2', own: 'Our own pages' };
-export const isTenantKey = (k: string): k is `${string}:app${1 | 2 | 3}` => /^[a-z0-9-]+:app[123]$/.test(k);
-export const tenantKey = (tenantId: string, app: string) => `${tenantId}:${app}` as AppKey;
+export const isTenantKey = (k: string): k is `${string}:app${1 | 2 | 3}` => /^(own\/)?[a-z0-9-]+:app[123]$/.test(k);
+/** Flow D: tenant app signed in on our own pages */
+export const isOwnTenantKey = (k: string) => isTenantKey(k) && k.startsWith('own/');
+export const tenantKey = (tenantId: string, app: string, own = false) => `${own ? 'own/' : ''}${tenantId}:${app}` as AppKey;
+export const tenantIdOfKey = (k: string) => k.replace(/^own\//, '').split(':')[0];
+/** Where a tenant flow lives in the app */
+export const tenantPageFor = (k: string) => `${isOwnTenantKey(k) ? '/demo/tenants-own' : '/demo/tenants'}?tenant=${tenantIdOfKey(k)}`;
 
 export function tenantAppOf(c: SignupDemoConfig, key: AppKey) {
   if (!isTenantKey(key)) return undefined;
-  const [tid, app] = key.split(':');
+  const [tid, app] = key.replace(/^own\//, '').split(':');
   const tenant = c.tenants?.find((t) => t.id === tid);
   const a = tenant?.apps.find((x) => x.key === app);
   return tenant && a ? { tenant, app: a } : undefined;
@@ -158,7 +164,11 @@ export interface HostedOptions {
 export async function hostedSignIn(c: SignupDemoConfig, app: AppKey, o: HostedOptions) {
   sessionStorage.setItem(PENDING, JSON.stringify({ app, method: o.method, startedAt: Date.now() }));
   if (isTenantKey(app)) {
-    logFlow('go', `Open ${labelOf(c, app)}`, `Browser → Cognito /oauth2/authorize · client_id=${clientIdOf(c, app)} · response_type=code · PKCE S256${o.idp ? ` · identity_provider=${o.idp}` : ''}`);
+    logFlow(
+      'go',
+      isOwnTenantKey(app) ? `Our page → ${o.idp ?? 'identity provider'} for ${labelOf(c, app)}` : `Open ${labelOf(c, app)}`,
+      `Browser → Cognito /oauth2/authorize · client_id=${clientIdOf(c, app)} · response_type=code · PKCE S256${o.idp ? ` · identity_provider=${o.idp} (Cognito's page is skipped)` : ''}`,
+    );
   }
   const extra: Record<string, string> = {};
   if (o.idp) extra.identity_provider = o.idp;
@@ -223,7 +233,7 @@ export function friendly(e: unknown): string {
     case 'InvalidPasswordException':
       return x.message.replace(/^Password did not conform with policy: /, '');
     case 'UserLambdaValidationException':
-      return x.message.replace(/^PreSignUp failed with error /, '').replace(/\.+$/, '') + '.';
+      return x.message.replace(/^(PreSignUp|PreTokenGeneration(V2_0)?) failed with error /, '').replace(/\.+$/, '') + '.';
     case 'CodeMismatchException':
       return 'That code is not right. Check the email and try again.';
     case 'ExpiredCodeException':
@@ -252,9 +262,10 @@ export interface RegisterInput {
   affiliation: string;
 }
 /** Sign up: Cognito creates the user (unconfirmed) and emails a 6-digit code */
-export async function register(c: SignupDemoConfig, v: RegisterInput): Promise<string> {
+export async function register(c: SignupDemoConfig, v: RegisterInput, app: AppKey = 'own'): Promise<string> {
+  const t = tenantAppOf(c, app);
   const r = await idp<{ CodeDeliveryDetails?: { Destination?: string } }>(c, 'SignUp', {
-    ClientId: c.ownClientId,
+    ClientId: clientIdOf(c, app),
     Username: v.email.trim().toLowerCase(),
     Password: v.password,
     UserAttributes: [
@@ -262,20 +273,31 @@ export async function register(c: SignupDemoConfig, v: RegisterInput): Promise<s
       { Name: 'given_name', Value: v.firstName.trim() },
       { Name: 'family_name', Value: v.lastName.trim() },
       { Name: 'custom:affiliation', Value: v.affiliation.trim() },
+      // Flow D: join the tenant that owns this app (checked by the pre sign-up trigger, then immutable)
+      ...(t ? [{ Name: 'custom:tenant_id', Value: t.tenant.id }] : []),
     ],
   });
+  if (t) logFlow('go', `SignUp through ${labelOf(c, app)}`, `client_id=${clientIdOf(c, app)} · custom:tenant_id=${t.tenant.id} · pre sign-up check passed · 6-digit code emailed`);
   return r.CodeDeliveryDetails?.Destination ?? v.email;
 }
-export const confirmRegistration = (c: SignupDemoConfig, email: string, code: string) =>
-  idp(c, 'ConfirmSignUp', { ClientId: c.ownClientId, Username: email.trim().toLowerCase(), ConfirmationCode: code.trim() });
-export const resendRegistrationCode = (c: SignupDemoConfig, email: string) =>
-  idp(c, 'ResendConfirmationCode', { ClientId: c.ownClientId, Username: email.trim().toLowerCase() });
+export async function confirmRegistration(c: SignupDemoConfig, email: string, code: string, app: AppKey = 'own') {
+  await idp(c, 'ConfirmSignUp', { ClientId: clientIdOf(c, app), Username: email.trim().toLowerCase(), ConfirmationCode: code.trim() });
+  if (isTenantKey(app)) logFlow('ok', 'Email verified (ConfirmSignUp)', `The account now belongs to ${tenantAppOf(c, app)?.tenant.name}`);
+}
+export const resendRegistrationCode = (c: SignupDemoConfig, email: string, app: AppKey = 'own') =>
+  idp(c, 'ResendConfirmationCode', { ClientId: clientIdOf(c, app), Username: email.trim().toLowerCase() });
 
 /** Password sign-in with SRP: the password never leaves the browser */
-export async function passwordSignIn(c: SignupDemoConfig, email: string, password: string): Promise<void> {
-  const step = await new OwnAuth(c.userPoolId, c.ownClientId, 'Demo').signIn(email, password);
-  if (step.kind === 'done') return keepOwnTokens(step.tokens, 'Email and password');
-  if (step.kind === 'error') throw new CognitoError('Auth', step.message);
+export async function passwordSignIn(c: SignupDemoConfig, email: string, password: string, app: AppKey = 'own'): Promise<void> {
+  const step = await new OwnAuth(c.userPoolId, clientIdOf(c, app), 'Demo').signIn(email, password);
+  if (step.kind === 'done') {
+    if (isTenantKey(app)) logFlow('token', 'SRP sign-in: InitiateAuth (USER_SRP_AUTH) → PASSWORD_VERIFIER', `client_id=${clientIdOf(c, app)} · only a proof of the password is sent · Cognito ran the pre-token check`);
+    return keepOwnTokens(c, app, step.tokens, 'Email and password (our page)');
+  }
+  if (step.kind === 'error') {
+    if (isTenantKey(app)) logFlow('refused', `Sign-in to ${labelOf(c, app)} refused`, step.message);
+    throw new CognitoError('Auth', step.message);
+  }
   throw new CognitoError('Auth', 'This account has an authenticator app set up. Use the hosted sign-in page for it.');
 }
 
@@ -286,32 +308,44 @@ interface AuthResult {
   ChallengeParameters?: Record<string, string>;
 }
 /** Email one-time code, step 1: Cognito emails a code */
-export async function startEmailCode(c: SignupDemoConfig, email: string): Promise<{ session: string; destination: string }> {
+export async function startEmailCode(c: SignupDemoConfig, email: string, app: AppKey = 'own'): Promise<{ session: string; destination: string }> {
   const r = await idp<AuthResult>(c, 'InitiateAuth', {
-    ClientId: c.ownClientId,
+    ClientId: clientIdOf(c, app),
     AuthFlow: 'USER_AUTH',
     AuthParameters: { USERNAME: email.trim().toLowerCase(), PREFERRED_CHALLENGE: 'EMAIL_OTP' },
   });
   if (r.ChallengeName !== 'EMAIL_OTP' || !r.Session) {
     throw new CognitoError('Auth', 'Email codes are not available for this account. Sign in with your password.');
   }
+  if (isTenantKey(app)) logFlow('go', 'InitiateAuth (USER_AUTH, EMAIL_OTP): Cognito emailed a sign-in code', `client_id=${clientIdOf(c, app)}`);
   return { session: r.Session, destination: r.ChallengeParameters?.CODE_DELIVERY_DESTINATION ?? email };
 }
 /** Email one-time code, step 2: check the code and sign in */
-export async function finishEmailCode(c: SignupDemoConfig, email: string, session: string, code: string): Promise<void> {
-  const r = await idp<AuthResult>(c, 'RespondToAuthChallenge', {
-    ClientId: c.ownClientId,
-    ChallengeName: 'EMAIL_OTP',
-    Session: session,
-    ChallengeResponses: { USERNAME: email.trim().toLowerCase(), EMAIL_OTP_CODE: code.trim() },
-  });
+export async function finishEmailCode(c: SignupDemoConfig, email: string, session: string, code: string, app: AppKey = 'own'): Promise<void> {
+  let r: AuthResult;
+  try {
+    r = await idp<AuthResult>(c, 'RespondToAuthChallenge', {
+      ClientId: clientIdOf(c, app),
+      ChallengeName: 'EMAIL_OTP',
+      Session: session,
+      ChallengeResponses: { USERNAME: email.trim().toLowerCase(), EMAIL_OTP_CODE: code.trim() },
+    });
+  } catch (e) {
+    if (isTenantKey(app)) logFlow('refused', `Sign-in to ${labelOf(c, app)} refused`, friendly(e));
+    throw e;
+  }
   if (!r.AuthenticationResult) throw new CognitoError('Auth', 'Sign-in needs another step that this page does not support.');
   const a = r.AuthenticationResult;
-  keepOwnTokens({ idToken: a.IdToken, accessToken: a.AccessToken, refreshToken: a.RefreshToken ?? '' }, 'Email one-time code');
+  if (isTenantKey(app)) logFlow('token', 'RespondToAuthChallenge with the emailed code', `client_id=${clientIdOf(c, app)} · Cognito ran the pre-token check`);
+  keepOwnTokens(c, app, { idToken: a.IdToken, accessToken: a.AccessToken, refreshToken: a.RefreshToken ?? '' }, 'Email one-time code (our page)');
 }
 
-function keepOwnTokens(t: OwnTokens, method: string) {
-  saveSession({ app: 'own', method, idToken: t.idToken, accessToken: t.accessToken, refreshToken: t.refreshToken, at: Date.now() });
+function keepOwnTokens(c: SignupDemoConfig, app: AppKey, t: OwnTokens, method: string) {
+  saveSession({ app, method, idToken: t.idToken, accessToken: t.accessToken, refreshToken: t.refreshToken, at: Date.now() });
+  if (isTenantKey(app)) {
+    const a = decodeJwt(t.accessToken);
+    logFlow('ok', `Signed in to ${labelOf(c, app)}`, `Access token claims · tenant_id=${a.tenant_id} · app=${a.app} · role=${a.role} · client_id=${a.client_id}`);
+  }
 }
 
 // ---------- profile (both page types) ----------
@@ -366,8 +400,19 @@ export async function signOut(c: SignupDemoConfig, app: AppKey) {
   if (s?.refreshToken) await idp(c, 'RevokeToken', { Token: s.refreshToken, ClientId: clientIdOf(c, app) }).catch(() => undefined);
   dropSession(app);
   if (app === 'own') return navigate('/demo');
+  if (isOwnTenantKey(app)) {
+    // Our own pages have no Cognito session cookie: revoking the refresh tokens is the sign-out
+    for (const k of Object.keys(sessions()) as AppKey[]) {
+      const other = sessions()[k];
+      if (!isOwnTenantKey(k)) continue;
+      if (other?.refreshToken) await idp(c, 'RevokeToken', { Token: other.refreshToken, ClientId: clientIdOf(c, k) }).catch(() => undefined);
+      dropSession(k);
+    }
+    logFlow('info', 'Signed out of every app', 'Refresh tokens revoked (RevokeToken); our pages keep no Cognito session cookie');
+    return navigate(tenantPageFor(app));
+  }
   // Hosted pages share one Cognito session cookie: clear it, and every hosted session with it
-  for (const k of Object.keys(sessions()) as AppKey[]) if (k !== 'own') dropSession(k);
+  for (const k of Object.keys(sessions()) as AppKey[]) if (k !== 'own' && !isOwnTenantKey(k)) dropSession(k);
   const back = isTenantKey(app) ? '/demo/tenants' : '/demo';
   if (isTenantKey(app)) logFlow('info', 'Signed out of every app', "Refresh tokens revoked and Cognito's session cookie cleared at /logout");
   const u = new URL(`${c.loginDomain}/logout`);

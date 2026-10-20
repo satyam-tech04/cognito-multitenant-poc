@@ -303,7 +303,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: rgba(0, 0, 0, 0.
 .mt-apps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; }
 @media (max-width: 760px) { .mt-apps { grid-template-columns: 1fr; } }
 .mt-app { --t: #333; background: #fff; border: 1px solid var(--line); border-top: 4px solid var(--t); border-radius: 12px; padding: 0.9rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.45rem; min-width: 0; }
-.mt-app.signed { box-shadow: 0 0 0 2px color-mix(in srgb, var(--t) 35%, transparent); }
+.mt-app.is-signed { box-shadow: 0 0 0 2px color-mix(in srgb, var(--t) 35%, transparent); }
 .mt-app h3 { margin: 0; font-size: 1.1rem; }
 .mt-app-n { margin: 0; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); font-weight: 700; }
 .mt-client { margin: 0; color: var(--muted); font-size: 0.72rem; word-break: break-all; }
@@ -336,3 +336,8 @@ code { font-family: var(--mono); font-size: 0.88em; background: rgba(0, 0, 0, 0.
 .mt-steps li.k-refused { box-shadow: inset 3px 0 0 #ef4444; }
 .mt-steps li.k-sso { box-shadow: inset 3px 0 0 #3b82f6; }
 .mt-steps li.k-ok, .mt-steps li.k-api { box-shadow: inset 3px 0 0 #22c55e; }
+.bf-tenant { text-align: center; font-size: 0.78rem; font-weight: 700; margin: -0.4rem 0 0.9rem; letter-spacing: 0.01em; }
+.demo-tag.d { background: #b45309; }
+.demo-tag.inline { width: 1.4rem; height: 1.4rem; border-radius: 6px; font-size: 0.75rem; margin-right: 0.5rem; vertical-align: middle; }
+.demo-mt-banner.d { border-color: #b45309; }
+.demo-mt-banner.d .demo-mt-go { color: #b45309; }

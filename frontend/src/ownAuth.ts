@@ -21,6 +21,9 @@ function friendly(e: { code?: string; name?: string; message?: string }): string
     case 'NotAuthorizedException':
     case 'UserNotFoundException':
     case 'UserLambdaValidationException':
+      // A pre-token refusal comes after the password was accepted, so its reason can be shown
+      // (e.g. "no access to this tenant"); pre-auth refusals stay generic
+      if (/PreTokenGeneration/.test(e.message ?? '')) return (e.message ?? '').replace(/^.*failed with error /, '').replace(/\.+$/, '.');
       return 'Incorrect email or password.';
     case 'CodeMismatchException':
       return 'That code is not right. Check your authenticator app and try again.';

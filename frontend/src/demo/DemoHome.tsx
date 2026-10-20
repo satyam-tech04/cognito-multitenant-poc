@@ -66,8 +66,18 @@ export function DemoHome() {
         <button className="demo-mt-banner" onClick={() => navigate('/demo/tenants')}>
           <span className="demo-tag c">C</span>
           <span>
-            <b>Multi-tenant flow: {c.tenants!.length} tenants × 3 apps</b>
+            <b>Multi-tenant flow with Cognito's hosted pages: {c.tenants!.length} tenants × 3 apps</b>
             <span className="muted">Sign in once, single sign-on across a tenant's apps, other tenants refused at sign-in and in the API, with a live step-by-step flow.</span>
+          </span>
+          <span className="demo-mt-go">Open →</span>
+        </button>
+      )}
+      {(c.tenants?.length ?? 0) > 0 && (
+        <button className="demo-mt-banner d" onClick={() => navigate('/demo/tenants-own')}>
+          <span className="demo-tag d">D</span>
+          <span>
+            <b>Multi-tenant flow with our own login and registration pages</b>
+            <span className="muted">Same tenants and apps as C. Register into a tenant and sign in on our pages; other tenants are refused at sign-in and in the API. No single sign-on between apps.</span>
           </span>
           <span className="demo-mt-go">Open →</span>
         </button>

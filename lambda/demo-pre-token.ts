@@ -4,7 +4,8 @@ import type { PreTokenGenerationV2TriggerEvent } from 'aws-lambda';
  * Pre Token Generation V2 trigger for the registration demo's SHARED pool, tenant apps only.
  * Each tenant has three app clients. TENANT_APPS (env, JSON) maps client ID → tenant and app.
  *
- *   • a password / email-code user must be in the tenant's group (tenant_<id>)
+ *   • a password / email-code user must be in the tenant's group (tenant_<id>), or have registered
+ *     through one of the tenant's apps (custom:tenant_id, set once at sign-up)
  *   • a Microsoft user must have an email domain the tenant allows
  *   • otherwise the sign-in is refused, including single sign-on into another tenant's app
  *   • allowed sign-ins get tenant_id, app and role claims in BOTH tokens
@@ -34,7 +35,11 @@ export const handler = async (event: PreTokenGenerationV2TriggerEvent) => {
   const federated = Boolean(attrs.identities);
   const domain = String(attrs.email ?? '').toLowerCase().split('@')[1] ?? '';
 
-  const member = federated ? hit.allowedDomains.map((d) => d.toLowerCase()).includes(domain) : groups.includes(`tenant_${hit.tenantId}`);
+  // Members: Microsoft users by email domain; others by the tenant group (added by an admin) or by the
+  // tenant tag set once when they registered through this tenant's app (checked by pre sign-up)
+  const member = federated
+    ? hit.allowedDomains.map((d) => d.toLowerCase()).includes(domain)
+    : groups.includes(`tenant_${hit.tenantId}`) || attrs['custom:tenant_id'] === hit.tenantId;
   if (!member) {
     // Shown on the app's callback page; reveals nothing about other tenants
     throw new Error(`This account does not have access to ${hit.tenantName}.`);

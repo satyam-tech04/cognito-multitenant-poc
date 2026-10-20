@@ -66,4 +66,6 @@ export const DEMO_APPS: Array<Pick<DemoTenantApp, 'key' | 'name'>> = [
 ];
 
 export const AFFILIATION_ATTR = 'custom:affiliation';
+/** Tenant tag set once at self-registration on our own pages (flow D) */
+export const TENANT_ATTR = 'custom:tenant_id';
 export const AFFILIATION_MAX = 500;

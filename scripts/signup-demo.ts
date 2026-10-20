@@ -13,6 +13,7 @@
  * Brand (name, colours, images) comes from config/signup-demo.local.json, which is gitignored.
  */
 import {
+  AddCustomAttributesCommand,
   AdminAddUserToGroupCommand,
   AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
@@ -189,6 +190,14 @@ if (ms) {
   notes.push('Microsoft sign-in is off: config/idp.local.json has no "microsoft" block.');
 }
 
+// Tenant tag for self-registration on our own pages (flow D). Set once at sign-up, never changed:
+// the pre sign-up trigger checks it matches the tenant that owns the app client
+if (!pool.SchemaAttributes?.some((a) => a.Name === 'custom:tenant_id')) {
+  step('Custom attribute tenant_id');
+  await cognito.send(new AddCustomAttributesCommand({ UserPoolId: poolId, CustomAttributes: [{ Name: 'tenant_id', AttributeDataType: 'String', Mutable: false, StringAttributeConstraints: { MinLength: '1', MaxLength: '64' } }] }));
+  done('added (immutable)');
+}
+
 // ---------- 5. App clients: two hosted products + our own pages ----------
 const existing = new Map<string, string>();
 let NextToken: string | undefined;
@@ -198,7 +207,7 @@ do {
   NextToken = r.NextToken;
 } while (NextToken);
 
-const attrs = ['email', 'given_name', 'family_name', 'custom:affiliation'];
+const attrs = ['email', 'given_name', 'family_name', 'custom:affiliation', 'custom:tenant_id'];
 async function client(name: string): Promise<string> {
   step(`App client ${name}`);
   if (existing.has(name)) {
@@ -237,10 +246,6 @@ async function client(name: string): Promise<string> {
 const hostedClients = { product1: await client(CLIENTS.product1), product2: await client(CLIENTS.product2) };
 const ownClientId = await client(CLIENTS.own);
 
-// Only our own page must send Affiliation; hosted sign-ups add it after first sign-in
-step('Pre sign-up rule');
-await setEnv(FN_NAME, { REQUIRE_AFFILIATION_CLIENTS: ownClientId });
-done('Affiliation required on our own sign-up page');
 
 // ---------- 5b. Multi-tenant flow: three app clients per tenant, groups, demo users ----------
 const tenants: DemoTenant[] = [];
@@ -288,16 +293,31 @@ for (const t of TENANTS) {
 }
 step('Tenant rules');
 await setEnv(TOKEN_FN, { TENANT_APPS: JSON.stringify(tenantApps) });
+// Pre sign-up: Affiliation required on our own pages; a tenant tag must match the app's tenant
+await setEnv(FN_NAME, {
+  REQUIRE_AFFILIATION_CLIENTS: ownClientId,
+  TENANT_CLIENTS: JSON.stringify(Object.fromEntries(Object.entries(tenantApps).map(([id, a]) => [id, a.tenantId]))),
+});
 const pt = (await cognito.send(new DescribeUserPoolCommand({ UserPoolId: poolId }))).UserPool!.LambdaConfig?.PreTokenGenerationConfig;
 if (pt?.LambdaArn !== tokenFnArn) await setPoolTriggers({ PreTokenGenerationConfig: { LambdaArn: tokenFnArn, LambdaVersion: 'V2_0' } });
 done(`${Object.keys(tenantApps).length} tenant apps`);
-// Older demo clients only listed /demo as a logout address
-for (const id of [...Object.values(hostedClients), ownClientId]) {
+// Clients created by earlier runs: add newer logout addresses and attribute permissions
+for (const id of [...Object.values(hostedClients), ownClientId, ...Object.keys(tenantApps)]) {
   const cur = (await cognito.send(new DescribeUserPoolClientCommand({ UserPoolId: poolId, ClientId: id }))).UserPoolClient!;
-  const want = origins.flatMap((o) => [`${o}/demo`, `${o}/demo/tenants`]);
-  if (want.every((u) => cur.LogoutURLs?.includes(u))) continue;
+  const wantLogout = origins.flatMap((o) => [`${o}/demo`, `${o}/demo/tenants`]);
+  const wantRead = [...attrs, 'email_verified'];
+  if (wantLogout.every((u) => cur.LogoutURLs?.includes(u)) && wantRead.every((a) => cur.ReadAttributes?.includes(a)) && attrs.every((a) => cur.WriteAttributes?.includes(a))) continue;
   const { ClientSecret: _s, CreationDate: _c, LastModifiedDate: _m, ...rest } = cur;
-  await cognito.send(new UpdateUserPoolClientCommand({ ...rest, UserPoolId: poolId, ClientId: id, LogoutURLs: [...new Set([...(cur.LogoutURLs ?? []), ...want])] }));
+  await cognito.send(
+    new UpdateUserPoolClientCommand({
+      ...rest,
+      UserPoolId: poolId,
+      ClientId: id,
+      LogoutURLs: [...new Set([...(cur.LogoutURLs ?? []), ...wantLogout])],
+      ReadAttributes: [...new Set([...(cur.ReadAttributes ?? []), ...wantRead])],
+      WriteAttributes: [...new Set([...(cur.WriteAttributes ?? []), ...attrs])],
+    }),
+  );
 }
 
 // ---------- 6. Hosted page branding (one style per hosted product) ----------

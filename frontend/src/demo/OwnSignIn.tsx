@@ -1,12 +1,15 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { applyTheme, navigate } from '../lib';
 import { BrandFrame, Field, MicrosoftLogo } from './BrandFrame';
-import { finishEmailCode, friendly, hostedSignIn, loadDemo, passwordSignIn, ssoDomainOf, startEmailCode, type SignupDemoConfig } from './demoLib';
+import { finishEmailCode, friendly, hostedSignIn, isOwnTenantKey, loadDemo, passwordSignIn, ssoDomainOf, startEmailCode, tenantAppOf, tenantPageFor, type AppKey, type SignupDemoConfig } from './demoLib';
 
 type Mode = 'password' | 'code';
 
 /** /demo/login: our own sign-in page (B): password, email one-time code, Microsoft and work-email SSO */
 export function OwnSignIn() {
+  // Flow D: ?app=own/<tenant>:<app> signs in to that tenant app instead of the plain demo client
+  const appParam = new URLSearchParams(window.location.search).get('app') ?? '';
+  const app: AppKey = isOwnTenantKey(appParam) ? (appParam as AppKey) : 'own';
   const [c, setC] = useState<SignupDemoConfig | null>(null);
   const [mode, setMode] = useState<Mode>('password');
   const [email, setEmail] = useState('');
@@ -25,6 +28,9 @@ export function OwnSignIn() {
 
   const otp = c.signInFactors.includes('EMAIL_OTP');
   const ssoDomain = ssoDomainOf(c, email);
+  const ta = tenantAppOf(c, app);
+  const done = ta ? tenantPageFor(app) : '/demo/account?app=own';
+  const showMicrosoft = Boolean(c.microsoftIdp) && (!ta || ta.tenant.allowedDomains.length > 0);
   const run = async (fn: () => Promise<void>) => {
     setProblem(null);
     setBusy(true);
@@ -39,17 +45,17 @@ export function OwnSignIn() {
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (ssoDomain) return void hostedSignIn(c, 'own', { idpIdentifier: ssoDomain, method: 'Work-email single sign-on' });
+    if (ssoDomain) return void hostedSignIn(c, app, { idpIdentifier: ssoDomain, method: 'Work-email single sign-on' });
     if (mode === 'password') {
       return void run(async () => {
-        await passwordSignIn(c, email, password);
-        navigate('/demo/account?app=own');
+        await passwordSignIn(c, email, password, app);
+        navigate(done);
       });
     }
-    if (!codeSession) return void run(async () => setCodeSession(await startEmailCode(c, email)));
+    if (!codeSession) return void run(async () => setCodeSession(await startEmailCode(c, email, app)));
     void run(async () => {
-      await finishEmailCode(c, email, codeSession.session, code);
-      navigate('/demo/account?app=own');
+      await finishEmailCode(c, email, codeSession.session, code, app);
+      navigate(done);
     });
   };
 
@@ -61,7 +67,7 @@ export function OwnSignIn() {
   };
 
   return (
-    <BrandFrame config={c}>
+    <BrandFrame config={c} subtitle={ta ? `${ta.tenant.name} · ${ta.app.name}` : undefined} subtitleColor={ta?.tenant.color} back={ta ? { href: done, label: `Back to ${ta.tenant.name}'s apps` } : undefined}>
       <h1 className="bf-title">Sign In</h1>
       <form className="bf-form" onSubmit={submit} noValidate>
         <Field label="Email ID" name="email" required type="email" placeholder="Email" autoComplete="username" value={email} onChange={(e) => { setEmail(e.target.value); setCodeSession(null); }} disabled={!!codeSession} autoFocus />
@@ -97,15 +103,15 @@ export function OwnSignIn() {
         )}
       </form>
 
-      {c.microsoftIdp && (
+      {showMicrosoft && (
         <>
           <p className="bf-or"><span>or</span></p>
-          <button type="button" className="bf-btn outline" onClick={() => hostedSignIn(c, 'own', { idp: c.microsoftIdp, method: 'Microsoft' })}>
+          <button type="button" className="bf-btn outline" onClick={() => hostedSignIn(c, app, { idp: c.microsoftIdp, method: 'Microsoft' })}>
             <MicrosoftLogo /> Continue with Microsoft
           </button>
         </>
       )}
-      <p className="bf-switch">New user? <button type="button" className="bf-link" onClick={() => navigate('/demo/register')}>Create Account</button></p>
+      <p className="bf-switch">New user? <button type="button" className="bf-link" onClick={() => navigate(ta ? `/demo/register?app=${app}` : '/demo/register')}>Create Account</button></p>
     </BrandFrame>
   );
 }

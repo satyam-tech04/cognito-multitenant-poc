@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { applyTheme, navigate } from '../lib';
 import { BrandFrame, Field, MicrosoftLogo } from './BrandFrame';
-import { AFFILIATION_MAX, confirmRegistration, friendly, hostedSignIn, loadDemo, passwordSignIn, register, resendRegistrationCode, type RegisterInput, type SignupDemoConfig } from './demoLib';
+import { AFFILIATION_MAX, confirmRegistration, friendly, hostedSignIn, isOwnTenantKey, loadDemo, passwordSignIn, register, resendRegistrationCode, tenantAppOf, tenantPageFor, type AppKey, type RegisterInput, type SignupDemoConfig } from './demoLib';
 
 const EMPTY: RegisterInput & { confirm: string } = { firstName: '', lastName: '', email: '', password: '', confirm: '', affiliation: '' };
 /** Same rules as the user pool's password policy, checked before Cognito sees the request */
@@ -16,6 +16,9 @@ const RESEND_COOLDOWN_S = 30;
 
 /** /demo/register: our own registration page (B), with every field the product needs */
 export function OwnRegister() {
+  // Flow D: ?app=own/<tenant>:<app> signs in to that tenant app instead of the plain demo client
+  const appParam = new URLSearchParams(window.location.search).get('app') ?? '';
+  const app: AppKey = isOwnTenantKey(appParam) ? (appParam as AppKey) : 'own';
   const [c, setC] = useState<SignupDemoConfig | null>(null);
   const [v, setV] = useState(EMPTY);
   const [errors, setErrors] = useState<Partial<Record<keyof typeof EMPTY, string>>>({});
@@ -39,6 +42,9 @@ export function OwnRegister() {
 
   if (!c) return <main className="demo">{problem ? <div className="card error">{problem}</div> : <div className="spinner" />}</main>;
 
+  const ta = tenantAppOf(c, app);
+  const frame = { subtitle: ta ? `${ta.tenant.name} · ${ta.app.name}` : undefined, subtitleColor: ta?.tenant.color, back: ta ? { href: tenantPageFor(app), label: `Back to ${ta.tenant.name}'s apps` } : undefined };
+  const loginPath = ta ? `/demo/login?app=${app}` : '/demo/login';
   const set = (k: keyof typeof EMPTY) => (e: { target: { value: string } }) => {
     setV({ ...v, [k]: e.target.value });
     setErrors({ ...errors, [k]: undefined });
@@ -63,7 +69,7 @@ export function OwnRegister() {
     if (!validate()) return;
     setBusy(true);
     try {
-      setDestination(await register(c!, v));
+      setDestination(await register(c!, v, app));
       setStep('verify');
       setCooldown(RESEND_COOLDOWN_S);
     } catch (err) {
@@ -78,10 +84,10 @@ export function OwnRegister() {
     setProblem(null);
     setBusy(true);
     try {
-      await confirmRegistration(c!, v.email, code);
+      await confirmRegistration(c!, v.email, code, app);
       // Verified: sign straight in with the password they just chose
-      await passwordSignIn(c!, v.email, v.password);
-      navigate('/demo/account?app=own&welcome=1');
+      await passwordSignIn(c!, v.email, v.password, app);
+      navigate(ta ? tenantPageFor(app) : '/demo/account?app=own&welcome=1');
     } catch (err) {
       setProblem(friendly(err));
       setBusy(false);
@@ -92,7 +98,7 @@ export function OwnRegister() {
     setProblem(null);
     setNotice(null);
     try {
-      await resendRegistrationCode(c!, v.email);
+      await resendRegistrationCode(c!, v.email, app);
       setNotice(`A new code was sent to ${destination}.`);
       setCooldown(RESEND_COOLDOWN_S);
     } catch (err) {
@@ -102,7 +108,7 @@ export function OwnRegister() {
 
   if (step === 'verify') {
     return (
-      <BrandFrame config={c}>
+      <BrandFrame config={c} {...frame}>
         <h1 className="bf-title">Verify your email</h1>
         <p className="bf-sub">We sent a 6-digit code to <b>{destination}</b>. Enter it to activate your account.</p>
         <form className="bf-form" onSubmit={verify} noValidate>
@@ -120,7 +126,7 @@ export function OwnRegister() {
   }
 
   return (
-    <BrandFrame config={c}>
+    <BrandFrame config={c} {...frame}>
       <h1 className="bf-title">Create Account</h1>
       <form className="bf-form" onSubmit={submit} noValidate>
         <Field label="First Name" name="firstName" required placeholder="First Name" autoComplete="given-name" value={v.firstName} onChange={set('firstName')} error={errors.firstName} />
@@ -144,12 +150,12 @@ export function OwnRegister() {
         />
         {problem && <p className="bf-problem">{problem}</p>}
         <button className="bf-btn primary" disabled={busy}>{busy ? 'Creating account…' : 'Create Account'}</button>
-        <button type="button" className="bf-btn outline" onClick={() => navigate('/demo/login')}>Back to Sign In</button>
+        <button type="button" className="bf-btn outline" onClick={() => navigate(loginPath)}>Back to Sign In</button>
       </form>
-      {c.microsoftIdp && (
+      {c.microsoftIdp && (!ta || ta.tenant.allowedDomains.length > 0) && (
         <>
           <p className="bf-or"><span>or</span></p>
-          <button type="button" className="bf-btn outline" onClick={() => hostedSignIn(c, 'own', { idp: c.microsoftIdp, method: 'Microsoft' })}>
+          <button type="button" className="bf-btn outline" onClick={() => hostedSignIn(c, app, { idp: c.microsoftIdp, method: 'Microsoft' })}>
             <MicrosoftLogo /> Register with Microsoft
           </button>
         </>
