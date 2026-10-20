@@ -51,6 +51,7 @@ interface LocalBrand {
   accent: string;
   primary: string;
   illustration?: string;
+  panelColor?: string;
   hostedBackground?: string;
   ssoDomains?: string[];
 }
@@ -217,7 +218,7 @@ await waitUntilFunctionUpdatedV2({ client: lambda, maxWaitTime: 120 }, { Functio
 done('Affiliation required on our own sign-up page');
 
 // ---------- 6. Hosted page branding (one style per hosted product) ----------
-const brand: SignupDemoBrand = { nameAccent: local.nameAccent, nameRest: local.nameRest, accent: local.accent, primary: local.primary };
+const brand: SignupDemoBrand = { nameAccent: local.nameAccent, nameRest: local.nameRest, accent: local.accent, primary: local.primary, panelColor: local.panelColor };
 for (const [label, id] of Object.entries(hostedClients)) {
   step(`Hosted page branding (${label})`);
   done(await brandHostedClient(id, label === 'product2' ? 'Product 2' : 'Product 1'));

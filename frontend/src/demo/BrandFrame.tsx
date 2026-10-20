@@ -33,7 +33,7 @@ export function BrandFrame({ config, children }: { config: SignupDemoConfig; chi
   const style = { '--bf-primary': b.primary, '--bf-accent': b.accent } as CSSProperties;
   return (
     <div className="bf" style={style}>
-      <aside className="bf-art" style={b.illustration ? { backgroundImage: `url(${b.illustration})` } : undefined} aria-hidden="true" />
+      <aside className="bf-art" style={{ backgroundColor: b.panelColor, backgroundImage: b.illustration ? `url(${b.illustration})` : undefined }} aria-hidden="true" />
       <main className="bf-main">
         <div className="bf-card">
           <BrandLogo brand={b} />

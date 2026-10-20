@@ -6,5 +6,8 @@
   "primary": "#003da5",
   "illustration": "path/to/left-panel-image.jpg",
   "hostedBackground": "path/to/hosted-page-background.jpg",
-  "ssoDomains": ["yourcompany.com"]
+  "ssoDomains": [
+    "yourcompany.com"
+  ],
+  "panelColor": "#2759c8"
 }

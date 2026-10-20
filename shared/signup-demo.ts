@@ -16,6 +16,8 @@ export interface SignupDemoBrand {
   primary: string;
   /** Illustration for the left panel, as a data: URL (optional) */
   illustration?: string;
+  /** Colour behind the illustration, so it fits the panel without being cropped */
+  panelColor?: string;
 }
 
 export interface SignupDemoConfig {

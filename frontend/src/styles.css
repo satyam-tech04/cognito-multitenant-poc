@@ -245,7 +245,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: rgba(0, 0, 0, 0.
 /* ---------- registration demo: our own pages (B), product look ---------- */
 .bf { --bf-primary: #003da5; --bf-accent: #d32f2f; min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); background: #fff; color: #1f2329; font-family: Roboto, 'Segoe UI', Arial, sans-serif; }
 @media (max-width: 860px) { .bf { grid-template-columns: 1fr; } .bf-art { display: none; } }
-.bf-art { background: #2a5bd7 center / cover no-repeat; }
+.bf-art { background: #2759c8 center / min(88%, 900px) auto no-repeat; }
 .bf-main { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem 1.25rem; gap: 1rem; }
 .bf-card { width: 100%; max-width: 300px; display: flex; flex-direction: column; }
 .bf-logo { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; margin-bottom: 0.9rem; }
