@@ -35,6 +35,25 @@ export function ArchitecturePage() {
         </ol>
       </section>
 
+      <section className="guide-section">
+        <h2>Step by step: what happens, and when</h2>
+        <p className="muted">
+          Read top to bottom. Each column is one part of the system; each arrow is one step. Red markers show where a
+          request can be refused.
+        </p>
+        <Sequence />
+        <Table
+          head={['Where it can be refused', 'Why', 'What the person sees']}
+          rows={[
+            ['Step 3 · sign-up rule', 'Affiliation missing, or joining another tenant', 'The reason on the sign-up form'],
+            ['Step 7 · code check', 'Wrong or expired code', '"That code is not right" / "Send a new code"'],
+            ['Step 10 · password or code check', 'Wrong password or code; account deactivated', '"Incorrect email or password"'],
+            ['Step 12 · sign-in rule', 'Person is not a member of this tenant', '"This account does not have access to …"'],
+            ['Step 16 · API check', 'Pass is for another tenant, expired or fake', 'No data (403 or 401)'],
+          ]}
+        />
+      </section>
+
       <Section id="parts" title="What each part is for">
         <Table
           head={['Part', 'What it does', 'Why we need it']}
@@ -227,6 +246,136 @@ function Box({ x, y, w, h, fill, stroke, title, lines }: { x: number; y: number;
       {lines.map((l, i) => (
         <text key={l} x={x + 14} y={y + 48 + i * 18} className="arch-sub">{l}</text>
       ))}
+    </g>
+  );
+}
+
+/** Sequence diagram: who talks to whom, in order, across registration, sign-in, use and a second app */
+const LANES = [
+  { id: 'person', x: 215, title: 'Person', color: '#334155', fill: '#f8fafc' },
+  { id: 'page', x: 385, title: 'Login page / app', color: '#2563eb', fill: '#eff6ff' },
+  { id: 'cognito', x: 575, title: 'Cognito', color: '#16a34a', fill: '#f0fdf4' },
+  { id: 'rules', x: 760, title: 'Rules (Lambda)', color: '#ca8a04', fill: '#fefce8' },
+  { id: 'email', x: 910, title: 'Email', color: '#db2777', fill: '#fdf2f8' },
+  { id: 'ms', x: 1045, title: 'Microsoft', color: '#7c3aed', fill: '#f5f3ff' },
+  { id: 'api', x: 1190, title: 'Our API', color: '#334155', fill: '#f8fafc' },
+] as const;
+type Lane = (typeof LANES)[number]['id'];
+const laneX = (id: Lane) => LANES.find((l) => l.id === id)!.x;
+
+type Row =
+  | { kind: 'phase'; y: number; title: string; note: string }
+  | { kind: 'msg'; y: number; n: number; from: Lane; to: Lane; label: string; back?: boolean; refuse?: boolean; color?: string }
+  | { kind: 'self'; y: number; n: number; lane: Lane; label: string; refuse?: boolean };
+
+const ROWS: Row[] = [
+  { kind: 'phase', y: 96, title: 'A · Registration', note: 'once per person' },
+  { kind: 'msg', y: 132, n: 1, from: 'person', to: 'page', label: 'Fills in the sign-up form' },
+  { kind: 'msg', y: 166, n: 2, from: 'page', to: 'cognito', label: 'Create account (SignUp)' },
+  { kind: 'msg', y: 200, n: 3, from: 'cognito', to: 'rules', label: 'Fields OK? Right tenant?', refuse: true },
+  { kind: 'msg', y: 234, n: 4, from: 'cognito', to: 'email', label: 'Send 6-digit code' },
+  { kind: 'msg', y: 268, n: 5, from: 'email', to: 'person', label: 'Code arrives in the inbox', back: true },
+  { kind: 'msg', y: 302, n: 6, from: 'person', to: 'page', label: 'Types the code' },
+  { kind: 'msg', y: 336, n: 7, from: 'page', to: 'cognito', label: 'Confirm code → account active', refuse: true },
+
+  { kind: 'phase', y: 376, title: 'B · Sign-in', note: 'each time a session starts' },
+  { kind: 'msg', y: 412, n: 8, from: 'person', to: 'page', label: 'Signs in' },
+  { kind: 'msg', y: 446, n: 9, from: 'cognito', to: 'ms', label: 'Microsoft users only: sign in at Microsoft', color: '#7c3aed' },
+  { kind: 'msg', y: 480, n: 10, from: 'page', to: 'cognito', label: 'Check password or code', refuse: true },
+  { kind: 'msg', y: 514, n: 11, from: 'cognito', to: 'rules', label: 'Member of this tenant?' },
+  { kind: 'msg', y: 548, n: 12, from: 'rules', to: 'cognito', label: 'Add tenant_id + role', back: true, refuse: true },
+  { kind: 'msg', y: 582, n: 13, from: 'cognito', to: 'page', label: 'Pass (tokens) for this app', back: true, color: '#15803d' },
+
+  { kind: 'phase', y: 622, title: 'C · Using the app', note: 'every request' },
+  { kind: 'msg', y: 658, n: 14, from: 'page', to: 'api', label: 'Request + pass (access token)' },
+  { kind: 'self', y: 692, n: 15, lane: 'api', label: 'Check signature, expiry, tenant' },
+  { kind: 'msg', y: 726, n: 16, from: 'api', to: 'page', label: 'Data for this tenant only (other tenant = refused)', back: true, refuse: true },
+
+  { kind: 'phase', y: 766, title: 'D · Second app', note: 'same tenant' },
+  { kind: 'msg', y: 802, n: 17, from: 'page', to: 'cognito', label: 'Session reused (hosted)' },
+  { kind: 'msg', y: 836, n: 18, from: 'cognito', to: 'rules', label: 'Same tenant check again' },
+  { kind: 'msg', y: 870, n: 19, from: 'cognito', to: 'page', label: 'Pass for the second app', back: true, color: '#15803d' },
+];
+
+function Sequence() {
+  const H = 940;
+  return (
+    <div className="arch-scroll">
+      <svg className="arch-svg seq" viewBox={`0 0 1280 ${H}`} role="img" aria-labelledby="seq-title seq-desc">
+        <title id="seq-title">Step-by-step sequence</title>
+        <desc id="seq-desc">
+          Registration: the form goes to Cognito, the sign-up rule checks fields and tenant, Cognito emails a code and the
+          code confirms the account. Sign-in: Cognito checks the password, code or Microsoft account, the sign-in rule
+          checks the tenant and adds claims, and Cognito returns tokens. Using the app: the app calls our API with the
+          access token and gets only its tenant's data. A second app reuses Cognito's session on hosted pages.
+        </desc>
+        <defs>
+          <marker id="sq" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="context-stroke" />
+          </marker>
+        </defs>
+
+        {/* phase bands */}
+        {ROWS.filter((r): r is Extract<Row, { kind: 'phase' }> => r.kind === 'phase').map((p, i, all) => {
+          const end = all[i + 1]?.y ?? H - 30;
+          return (
+            <g key={p.title}>
+              <rect x={8} y={p.y - 14} width={1264} height={end - p.y + 4} rx={10} fill={i % 2 ? '#ffffff' : '#f8fafc'} stroke="#e2e8f0" />
+              <text x={22} y={p.y + 14} className="seq-phase">{p.title}</text>
+              <text x={22} y={p.y + 32} className="arch-sub">{p.note}</text>
+            </g>
+          );
+        })}
+
+        {/* lane headers and lifelines */}
+        {LANES.map((l) => (
+          <g key={l.id}>
+            <line x1={l.x} y1={62} x2={l.x} y2={H - 30} stroke={l.color} strokeOpacity={0.35} strokeWidth={2} strokeDasharray="4 5" />
+            <rect x={l.x - 62} y={16} width={124} height={40} rx={9} fill={l.fill} stroke={l.color} strokeWidth={2} />
+            <text x={l.x} y={41} textAnchor="middle" className="seq-lane">{l.title}</text>
+          </g>
+        ))}
+
+        {/* messages */}
+        {ROWS.map((r) => {
+          if (r.kind === 'phase') return null;
+          if (r.kind === 'self') {
+            const x = laneX(r.lane);
+            return (
+              <g key={r.n}>
+                <rect x={x - 186} y={r.y - 15} width={176} height={30} rx={6} fill="#ffffff" stroke="#334155" />
+                <text x={x - 98} y={r.y + 4} textAnchor="middle" className="seq-msg">{r.label}</text>
+                <Num x={x - 202} y={r.y} n={r.n} />
+              </g>
+            );
+          }
+          const x1 = laneX(r.from), x2 = laneX(r.to);
+          const color = r.color ?? '#475569';
+          const left = Math.min(x1, x2), right = Math.max(x1, x2);
+          return (
+            <g key={r.n}>
+              <line x1={x1} y1={r.y} x2={x2 + (x2 > x1 ? -4 : 4)} y2={r.y} stroke={color} strokeWidth={2} strokeDasharray={r.back ? '6 4' : undefined} markerEnd="url(#sq)" />
+              <text x={(left + right) / 2} y={r.y - 7} textAnchor="middle" className="seq-msg" fill={color}>{r.label}</text>
+              <Num x={left - 16} y={r.y} n={r.n} />
+              {r.refuse && <circle cx={right + 14} cy={r.y} r={5} fill="#dc2626" />}
+            </g>
+          );
+        })}
+
+        {/* footnotes inside the drawing */}
+        <text x={22} y={H - 8} className="arch-sub">
+          Step 17 on our own pages is a new sign-in (no shared session). After 60 minutes the app swaps its refresh token for a new pass and steps 11–13 run again.
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+function Num({ x, y, n }: { x: number; y: number; n: number }) {
+  return (
+    <g>
+      <circle cx={x} cy={y} r={10} fill="#0f172a" />
+      <text x={x} y={y + 4} textAnchor="middle" className="seq-num">{n}</text>
     </g>
   );
 }
