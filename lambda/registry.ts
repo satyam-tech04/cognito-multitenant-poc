@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { awsCredentials, awsRegion } from './aws-credentials';
 import { clientKey, poolKey, type ClientLookup, type ModuleId, type PoolLookup, type TenantBranding, type TenantRecord, type TenantTheme } from '../shared/types';
+import { SIGNUP_DEMO_KEY, type SignupDemoConfig } from '../shared/signup-demo';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: awsRegion(), credentials: awsCredentials() }));
 const TABLE = process.env.TENANT_TABLE!;
@@ -64,6 +65,14 @@ export async function saveTheme(tenantId: string, theme: TenantTheme, branding: 
   );
   cache.delete(tenantId);
   listCache = undefined;
+}
+
+/** Registration demo settings (one row, see shared/signup-demo). */
+export async function signupDemoConfig(): Promise<SignupDemoConfig | undefined> {
+  const row = await getItem<SignupDemoConfig & { tenantId: string }>(SIGNUP_DEMO_KEY);
+  if (!row) return undefined;
+  const { tenantId: _k, ...config } = row;
+  return config;
 }
 
 let listCache: { at: number; tenants: TenantRecord[] } | undefined;

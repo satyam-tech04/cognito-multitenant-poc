@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { authenticate, AuthError } from './auth';
-import { allTenants, saveTheme, tenantById } from './registry';
+import { allTenants, saveTheme, signupDemoConfig, tenantById } from './registry';
 import { faviconSvg, logoSvg } from '../shared/branding-assets';
 import { validateThemeUpdate, type ThemeUpdate } from '../shared/theme';
 import type { PublicTenantConfig, TenantRecord } from '../shared/types';
@@ -54,6 +54,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     if (method !== 'GET') return json(405, { error: 'method_not_allowed' });
+
+    // ---- Public (no auth): registration demo settings (pool, clients, brand) ----
+    if (parts[0] === 'public' && parts[1] === 'signup-demo' && parts.length === 2) {
+      const c = await signupDemoConfig();
+      return c ? json(200, c) : json(404, { error: 'signup_demo_not_set_up', hint: 'npm run signup-demo' });
+    }
 
     // ---- Public (no auth): tenant directory and branding/config for the SPA ----
     if (parts[0] === 'public' && parts[1] === 'tenants') {

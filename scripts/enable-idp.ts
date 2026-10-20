@@ -119,8 +119,9 @@ await ddb.send(
   new UpdateCommand({
     TableName: outputs().TenantTable,
     Key: { tenantId: t.tenantId },
-    UpdateExpression: 'SET modules.#m.idps = :i, modules.#m.missing = :none, allowedEmailDomains = :d',
-    ExpressionAttributeNames: { '#m': module },
+    // "missing" is a DynamoDB reserved word, so it needs a placeholder
+    UpdateExpression: 'SET modules.#m.idps = :i, modules.#m.#missing = :none, allowedEmailDomains = :d',
+    ExpressionAttributeNames: { '#m': module, '#missing': 'missing' },
     ExpressionAttributeValues: { ':i': idps, ':none': [], ':d': domains },
   }),
 );

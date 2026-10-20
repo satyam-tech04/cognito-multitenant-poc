@@ -30,7 +30,8 @@
     "api": "tsx scripts/api-server.ts",
     "vercel:build": "tsx scripts/vercel-build.ts",
     "vercel:aws": "tsx scripts/vercel-aws-setup.ts",
-    "add-origin": "tsx scripts/add-origin.ts"
+    "add-origin": "tsx scripts/add-origin.ts",
+    "signup-demo": "tsx scripts/signup-demo.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch-logs": "^3.1152.0",

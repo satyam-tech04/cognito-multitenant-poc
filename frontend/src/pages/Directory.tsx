@@ -31,6 +31,14 @@ export function Directory() {
         </div>
       </header>
 
+      <div className="demo-banner">
+        <p>
+          <b>Registration and login demo:</b> self sign-up with Cognito's hosted pages and with our own pages, on one
+          shared user pool.
+        </p>
+        <button className="btn" onClick={() => navigate('/demo')}>Open the demo</button>
+      </div>
+
       {error && <div className="card error">Could not load tenants: {error}</div>}
       {!tenants && !error && <div className="spinner" />}
 

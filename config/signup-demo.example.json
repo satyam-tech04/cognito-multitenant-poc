@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to config/signup-demo.local.json (gitignored) to brand the registration demo.",
+  "nameAccent": "Demo",
+  "nameRest": " Portal",
+  "accent": "#d32f2f",
+  "primary": "#003da5",
+  "illustration": "path/to/left-panel-image.jpg",
+  "hostedBackground": "path/to/hosted-page-background.jpg",
+  "ssoDomains": ["yourcompany.com"]
+}

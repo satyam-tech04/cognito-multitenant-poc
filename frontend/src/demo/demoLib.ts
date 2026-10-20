@@ -1,0 +1,293 @@
+/**
+ * Registration demo: one shared Cognito pool, two sets of pages.
+ *   A  Cognito's hosted pages (managed login), reached with Authorization Code + PKCE
+ *   B  our own pages, calling the Cognito user pools API from the browser
+ * Both end up with the same Cognito tokens, stored here per "product".
+ */
+import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
+import { OwnAuth, type OwnTokens } from '../ownAuth';
+import { decodeJwt, getApiUrl, navigate } from '../lib';
+import type { SignupDemoConfig } from '../../../shared/signup-demo';
+
+export type { SignupDemoConfig };
+export { AFFILIATION_ATTR, AFFILIATION_MAX } from '../../../shared/signup-demo';
+
+/** product1 / product2 = hosted pages on two app clients (to show SSO); own = our own pages */
+export type AppKey = 'product1' | 'product2' | 'own';
+export const APP_LABEL: Record<AppKey, string> = { product1: 'Product 1', product2: 'Product 2', own: 'Our own pages' };
+
+export interface DemoSession {
+  app: AppKey;
+  /** How the user signed in, shown on the account page */
+  method: string;
+  idToken: string;
+  accessToken: string;
+  refreshToken?: string;
+  at: number;
+}
+
+// ---------- config ----------
+let configP: Promise<SignupDemoConfig> | undefined;
+export function loadDemo(): Promise<SignupDemoConfig> {
+  configP ??= (async () => {
+    const r = await fetch(`${await getApiUrl()}/public/signup-demo`, { cache: 'no-store' });
+    if (r.status === 404) throw new Error('The registration demo is not set up yet. Run: npm run signup-demo');
+    if (!r.ok) throw new Error(`Demo config ${r.status}`);
+    return (await r.json()) as SignupDemoConfig;
+  })();
+  configP.catch(() => (configP = undefined));
+  return configP;
+}
+
+const clientIdOf = (c: SignupDemoConfig, app: AppKey) => (app === 'own' ? c.ownClientId : c.hostedClients[app]);
+
+// ---------- sessions (sessionStorage: cleared when the tab closes) ----------
+const SESSIONS = 'demo.sessions';
+export function sessions(): Partial<Record<AppKey, DemoSession>> {
+  try {
+    return JSON.parse(sessionStorage.getItem(SESSIONS) ?? '{}');
+  } catch {
+    return {};
+  }
+}
+function saveSession(s: DemoSession) {
+  sessionStorage.setItem(SESSIONS, JSON.stringify({ ...sessions(), [s.app]: s }));
+}
+export function getSession(app: AppKey): DemoSession | undefined {
+  const s = sessions()[app];
+  if (!s) return undefined;
+  const exp = Number(decodeJwt(s.idToken).exp ?? 0) * 1000;
+  return exp > Date.now() ? s : undefined;
+}
+function dropSession(app: AppKey) {
+  const all = sessions();
+  delete all[app];
+  sessionStorage.setItem(SESSIONS, JSON.stringify(all));
+}
+
+// ---------- A: hosted pages (Authorization Code + PKCE) ----------
+const managers = new Map<string, UserManager>();
+function manager(c: SignupDemoConfig, app: AppKey, page: 'authorize' | 'signup' = 'authorize'): UserManager {
+  const key = `${app}:${page}`;
+  if (managers.has(key)) return managers.get(key)!;
+  const origin = window.location.origin;
+  const m = new UserManager({
+    authority: c.issuer,
+    client_id: clientIdOf(c, app),
+    redirect_uri: `${origin}/demo/callback`,
+    post_logout_redirect_uri: `${origin}/demo`,
+    response_type: 'code',
+    scope: 'openid email profile aws.cognito.signin.user.admin',
+    loadUserInfo: false,
+    automaticSilentRenew: false,
+    metadata: {
+      issuer: c.issuer,
+      // The hosted sign-up page takes the same parameters as the authorize endpoint
+      authorization_endpoint: `${c.loginDomain}/${page === 'signup' ? 'signup' : 'oauth2/authorize'}`,
+      token_endpoint: `${c.loginDomain}/oauth2/token`,
+      revocation_endpoint: `${c.loginDomain}/oauth2/revoke`,
+      end_session_endpoint: `${c.loginDomain}/logout`,
+      jwks_uri: `${c.issuer}/.well-known/jwks.json`,
+    },
+    userStore: new WebStorageStateStore({ store: window.sessionStorage, prefix: `demo.oidc.${app}.` }),
+    stateStore: new WebStorageStateStore({ store: window.sessionStorage, prefix: 'demo.oidcstate.' }),
+  });
+  managers.set(key, m);
+  return m;
+}
+
+const PENDING = 'demo.pending';
+export interface HostedOptions {
+  /** Open Cognito's sign-up page instead of sign-in */
+  signup?: boolean;
+  /** Skip Cognito's page and go straight to this identity provider (e.g. "Microsoft") */
+  idp?: string;
+  /** Work-email SSO: Cognito picks the identity provider from the email domain */
+  idpIdentifier?: string;
+  method: string;
+}
+export async function hostedSignIn(c: SignupDemoConfig, app: AppKey, o: HostedOptions) {
+  sessionStorage.setItem(PENDING, JSON.stringify({ app, method: o.method }));
+  const extra: Record<string, string> = {};
+  if (o.idp) extra.identity_provider = o.idp;
+  if (o.idpIdentifier) extra.idp_identifier = o.idpIdentifier;
+  await manager(c, app, o.signup ? 'signup' : 'authorize').signinRedirect({ extraQueryParams: extra });
+}
+
+/** /demo/callback: exchange the code (PKCE) and keep the tokens */
+export async function completeHostedSignIn(): Promise<AppKey> {
+  const raw = sessionStorage.getItem(PENDING);
+  if (!raw) throw new Error('No sign-in in progress. Start again from the demo page.');
+  const { app, method } = JSON.parse(raw) as { app: AppKey; method: string };
+  const c = await loadDemo();
+  // Both sign-in and sign-up requests share one state store, so either manager can complete them
+  const u = await manager(c, app).signinRedirectCallback();
+  sessionStorage.removeItem(PENDING);
+  const id = decodeJwt(u.id_token ?? '');
+  const viaMs = Array.isArray(id.identities) && id.identities.length > 0;
+  saveSession({ app, method: viaMs ? 'Microsoft' : method, idToken: u.id_token!, accessToken: u.access_token, refreshToken: u.refresh_token, at: Date.now() });
+  return app;
+}
+
+// ---------- B: our own pages (Cognito user pools API) ----------
+export class CognitoError extends Error {
+  constructor(public code: string, message: string) {
+    super(message);
+  }
+}
+async function idp<T>(c: SignupDemoConfig, action: string, body: Record<string, unknown>): Promise<T> {
+  const r = await fetch(`https://cognito-idp.${c.region}.amazonaws.com/`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-amz-json-1.1', 'x-amz-target': `AWSCognitoIdentityProviderService.${action}` },
+    body: JSON.stringify(body),
+  });
+  const data = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!r.ok) {
+    const code = String(data.__type ?? 'Error').split('#').pop()!;
+    throw new CognitoError(code, String(data.message ?? data.Message ?? 'Request failed'));
+  }
+  return data as T;
+}
+
+/** Plain-language messages; unknown-user and wrong-password look the same on purpose */
+export function friendly(e: unknown): string {
+  const x = e as CognitoError;
+  switch (x?.code) {
+    case 'UsernameExistsException':
+      return 'An account with this email already exists. Sign in instead.';
+    case 'InvalidPasswordException':
+      return x.message.replace(/^Password did not conform with policy: /, '');
+    case 'UserLambdaValidationException':
+      return x.message.replace(/^PreSignUp failed with error /, '').replace(/\.+$/, '') + '.';
+    case 'CodeMismatchException':
+      return 'That code is not right. Check the email and try again.';
+    case 'ExpiredCodeException':
+      return 'That code has expired. Send a new one.';
+    case 'NotAuthorizedException':
+    case 'UserNotFoundException':
+      return /disabled/i.test(x.message) ? 'This account is deactivated.' : 'Incorrect email or password.';
+    case 'UserNotConfirmedException':
+      return 'Please verify your email first.';
+    case 'LimitExceededException':
+    case 'TooManyRequestsException':
+    case 'TooManyFailedAttemptsException':
+      return 'Too many attempts. Please wait a few minutes and try again.';
+    case 'InvalidParameterException':
+      return x.message;
+    default:
+      return x?.message || 'Something went wrong. Please try again.';
+  }
+}
+
+export interface RegisterInput {
+  firstName: string;
+  lastName: string;
+  email: string;
+  password: string;
+  affiliation: string;
+}
+/** Sign up: Cognito creates the user (unconfirmed) and emails a 6-digit code */
+export async function register(c: SignupDemoConfig, v: RegisterInput): Promise<string> {
+  const r = await idp<{ CodeDeliveryDetails?: { Destination?: string } }>(c, 'SignUp', {
+    ClientId: c.ownClientId,
+    Username: v.email.trim().toLowerCase(),
+    Password: v.password,
+    UserAttributes: [
+      { Name: 'email', Value: v.email.trim().toLowerCase() },
+      { Name: 'given_name', Value: v.firstName.trim() },
+      { Name: 'family_name', Value: v.lastName.trim() },
+      { Name: 'custom:affiliation', Value: v.affiliation.trim() },
+    ],
+  });
+  return r.CodeDeliveryDetails?.Destination ?? v.email;
+}
+export const confirmRegistration = (c: SignupDemoConfig, email: string, code: string) =>
+  idp(c, 'ConfirmSignUp', { ClientId: c.ownClientId, Username: email.trim().toLowerCase(), ConfirmationCode: code.trim() });
+export const resendRegistrationCode = (c: SignupDemoConfig, email: string) =>
+  idp(c, 'ResendConfirmationCode', { ClientId: c.ownClientId, Username: email.trim().toLowerCase() });
+
+/** Password sign-in with SRP: the password never leaves the browser */
+export async function passwordSignIn(c: SignupDemoConfig, email: string, password: string): Promise<void> {
+  const step = await new OwnAuth(c.userPoolId, c.ownClientId, 'Demo').signIn(email, password);
+  if (step.kind === 'done') return keepOwnTokens(step.tokens, 'Email and password');
+  if (step.kind === 'error') throw new CognitoError('Auth', step.message);
+  throw new CognitoError('Auth', 'This account has an authenticator app set up. Use the hosted sign-in page for it.');
+}
+
+interface AuthResult {
+  AuthenticationResult?: { IdToken: string; AccessToken: string; RefreshToken?: string };
+  ChallengeName?: string;
+  Session?: string;
+  ChallengeParameters?: Record<string, string>;
+}
+/** Email one-time code, step 1: Cognito emails a code */
+export async function startEmailCode(c: SignupDemoConfig, email: string): Promise<{ session: string; destination: string }> {
+  const r = await idp<AuthResult>(c, 'InitiateAuth', {
+    ClientId: c.ownClientId,
+    AuthFlow: 'USER_AUTH',
+    AuthParameters: { USERNAME: email.trim().toLowerCase(), PREFERRED_CHALLENGE: 'EMAIL_OTP' },
+  });
+  if (r.ChallengeName !== 'EMAIL_OTP' || !r.Session) {
+    throw new CognitoError('Auth', 'Email codes are not available for this account. Sign in with your password.');
+  }
+  return { session: r.Session, destination: r.ChallengeParameters?.CODE_DELIVERY_DESTINATION ?? email };
+}
+/** Email one-time code, step 2: check the code and sign in */
+export async function finishEmailCode(c: SignupDemoConfig, email: string, session: string, code: string): Promise<void> {
+  const r = await idp<AuthResult>(c, 'RespondToAuthChallenge', {
+    ClientId: c.ownClientId,
+    ChallengeName: 'EMAIL_OTP',
+    Session: session,
+    ChallengeResponses: { USERNAME: email.trim().toLowerCase(), EMAIL_OTP_CODE: code.trim() },
+  });
+  if (!r.AuthenticationResult) throw new CognitoError('Auth', 'Sign-in needs another step that this page does not support.');
+  const a = r.AuthenticationResult;
+  keepOwnTokens({ idToken: a.IdToken, accessToken: a.AccessToken, refreshToken: a.RefreshToken ?? '' }, 'Email one-time code');
+}
+
+function keepOwnTokens(t: OwnTokens, method: string) {
+  saveSession({ app: 'own', method, idToken: t.idToken, accessToken: t.accessToken, refreshToken: t.refreshToken, at: Date.now() });
+}
+
+// ---------- profile (both page types) ----------
+export interface Profile {
+  email: string;
+  firstName: string;
+  lastName: string;
+  affiliation: string;
+  emailVerified: boolean;
+}
+export async function getProfile(c: SignupDemoConfig, accessToken: string): Promise<Profile> {
+  const r = await idp<{ UserAttributes: Array<{ Name: string; Value: string }> }>(c, 'GetUser', { AccessToken: accessToken });
+  const a = Object.fromEntries(r.UserAttributes.map((x) => [x.Name, x.Value]));
+  return {
+    email: a.email ?? '',
+    firstName: a.given_name ?? '',
+    lastName: a.family_name ?? '',
+    affiliation: a['custom:affiliation'] ?? '',
+    emailVerified: a.email_verified === 'true',
+  };
+}
+/** "Complete your profile": the signed-in user saves their own Affiliation */
+export const saveAffiliation = (c: SignupDemoConfig, accessToken: string, value: string) =>
+  idp(c, 'UpdateUserAttributes', { AccessToken: accessToken, UserAttributes: [{ Name: 'custom:affiliation', Value: value.trim() }] });
+
+// ---------- sign-out ----------
+export async function signOut(c: SignupDemoConfig, app: AppKey) {
+  const s = sessions()[app];
+  if (s?.refreshToken) await idp(c, 'RevokeToken', { Token: s.refreshToken, ClientId: clientIdOf(c, app) }).catch(() => undefined);
+  dropSession(app);
+  if (app === 'own') return navigate('/demo');
+  // Hosted pages: clear Cognito's session cookie too, or the next sign-in skips the page
+  for (const other of ['product1', 'product2'] as const) dropSession(other);
+  const u = new URL(`${c.loginDomain}/logout`);
+  u.searchParams.set('client_id', clientIdOf(c, app));
+  u.searchParams.set('logout_uri', `${window.location.origin}/demo`);
+  window.location.assign(u.toString());
+}
+
+/** Work-email SSO: is this email's domain sent to Microsoft? */
+export function ssoDomainOf(c: SignupDemoConfig, email: string): string | undefined {
+  const d = email.trim().toLowerCase().split('@')[1];
+  return d && c.ssoDomains.includes(d) ? d : undefined;
+}
