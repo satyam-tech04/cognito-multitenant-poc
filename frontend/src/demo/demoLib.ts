@@ -159,12 +159,15 @@ export interface HostedOptions {
   idp?: string;
   /** Work-email SSO: Cognito picks the identity provider from the email domain */
   idpIdentifier?: string;
+  /** "login": show Cognito's login page even if its session cookie could sign the user in silently */
+  prompt?: 'login';
   method: string;
 }
 export async function hostedSignIn(c: SignupDemoConfig, app: AppKey, o: HostedOptions) {
   sessionStorage.setItem(PENDING, JSON.stringify({ app, method: o.method, startedAt: Date.now() }));
   if (isTenantKey(app)) {
-    logFlow(
+    if (isTenantKey(app)) clearRefused();
+  logFlow(
       'go',
       isOwnTenantKey(app) ? `Our page → ${o.idp ?? `Microsoft (work-email single sign-on for @${o.idpIdentifier})`} for ${labelOf(c, app)}` : `Open ${labelOf(c, app)}`,
       `Browser → Cognito /oauth2/authorize · client_id=${clientIdOf(c, app)} · response_type=code · PKCE S256${o.idp ? ` · identity_provider=${o.idp} (Cognito's page is skipped)` : ''}`,
@@ -173,7 +176,7 @@ export async function hostedSignIn(c: SignupDemoConfig, app: AppKey, o: HostedOp
   const extra: Record<string, string> = {};
   if (o.idp) extra.identity_provider = o.idp;
   if (o.idpIdentifier) extra.idp_identifier = o.idpIdentifier;
-  await manager(c, app, o.signup ? 'signup' : 'authorize').signinRedirect({ extraQueryParams: extra });
+  await manager(c, app, o.signup ? 'signup' : 'authorize').signinRedirect({ extraQueryParams: extra, prompt: o.prompt });
 }
 
 /** /demo/callback: exchange the code (PKCE) and keep the tokens */
@@ -370,6 +373,21 @@ export async function getProfile(c: SignupDemoConfig, accessToken: string): Prom
 /** "Complete your profile": the signed-in user saves their own Affiliation */
 export const saveAffiliation = (c: SignupDemoConfig, accessToken: string, value: string) =>
   idp(c, 'UpdateUserAttributes', { AccessToken: accessToken, UserAttributes: [{ Name: 'custom:affiliation', Value: value.trim() }] });
+
+/**
+ * The tenant app whose sign-in was just refused. Cognito may have reused its session silently, so the
+ * tenant page offers to sign in again with a different account (prompt=login).
+ */
+const REFUSED = 'demo.refused';
+export function markRefused(app: AppKey) {
+  sessionStorage.setItem(REFUSED, app);
+}
+export function lastRefused(): AppKey | undefined {
+  return (sessionStorage.getItem(REFUSED) as AppKey | null) ?? undefined;
+}
+export function clearRefused() {
+  sessionStorage.removeItem(REFUSED);
+}
 
 /** Which app a failed callback was for (Cognito's error comes back to /demo/callback) */
 export function pendingApp(): AppKey | undefined {

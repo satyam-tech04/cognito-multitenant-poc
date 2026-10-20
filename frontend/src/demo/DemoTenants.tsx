@@ -3,8 +3,12 @@ import { applyTheme, decodeJwt, navigate } from '../lib';
 import { MicrosoftLogo } from './BrandFrame';
 import {
   callTenantApi,
+  clearRefused,
+  isOwnTenantKey,
   labelOf,
+  lastRefused,
   logFlow,
+  tenantIdOfKey,
   clearFlow,
   flowSteps,
   getSession,
@@ -122,6 +126,35 @@ export function DemoTenants({ own = false }: { own?: boolean }) {
               </button>
             ))}
           </div>
+
+          {(() => {
+            // A refused hosted sign-in may have reused Cognito's session without showing its page
+            const r = lastRefused();
+            if (!r || isOwnTenantKey(r) !== own || tenantIdOfKey(r) !== tenant.id) return null;
+            return (
+              <div className="mt-refused" role="alert">
+                <p>
+                  <b>{labelOf(c, r)} refused this account.</b>{' '}
+                  {own
+                    ? 'Sign in again with an account that belongs to this tenant.'
+                    : "Cognito signed you in silently with its saved session, so its login page didn't appear."}
+                </p>
+                <div>
+                  {own ? (
+                    <button className="btn small" onClick={() => { clearRefused(); navigate(`/demo/login?app=${r}`); }}>Sign in with a different account</button>
+                  ) : (
+                    <button className="btn small" onClick={() => {
+                      logFlow('info', 'Sign in with a different account', "prompt=login: Cognito shows its login page instead of reusing the saved session");
+                      void hostedSignIn(c, r, { prompt: 'login', method: 'Hosted sign-in page (different account)' });
+                    }}>
+                      Sign in with a different account
+                    </button>
+                  )}
+                  <button className="btn small ghost" onClick={() => { clearRefused(); setSteps(flowSteps()); }}>Dismiss</button>
+                </div>
+              </div>
+            );
+          })()}
 
           <TenantInfo tenant={tenant} microsoft={Boolean(c.microsoftIdp)} />
 

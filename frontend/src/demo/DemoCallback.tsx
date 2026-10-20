@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { navigate } from '../lib';
-import { clearPending, completeHostedSignIn, isTenantKey, logFlow, pendingApp, tenantPageFor } from './demoLib';
+import { clearPending, completeHostedSignIn, isTenantKey, logFlow, markRefused, pendingApp, tenantPageFor } from './demoLib';
 
 /** /demo/callback: Cognito sends the browser back here after the hosted pages or Microsoft */
 export function DemoCallback() {
@@ -19,6 +19,7 @@ export function DemoCallback() {
         // A refused tenant sign-in is part of the demo: log it and go back to the tenant page
         logFlow('back', 'Back at /demo/callback with an error instead of a code', `error=${qs.get('error')}`);
         logFlow('refused', 'Sign-in refused by the pre-token check', why);
+        markRefused(app!);
         clearPending();
         navigate(tenantPage);
         return;
@@ -34,6 +35,7 @@ export function DemoCallback() {
         if (tenantPage && m) {
           logFlow('token', 'Token exchange at /oauth2/token refused', 'Cognito reused the session and issued a code, then ran the pre-token check');
           logFlow('refused', 'Sign-in refused by the pre-token check', `${m[1]}.`);
+          markRefused(app!);
           clearPending();
           navigate(tenantPage);
           return;
