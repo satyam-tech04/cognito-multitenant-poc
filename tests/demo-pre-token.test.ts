@@ -6,7 +6,7 @@ import type { PreTokenGenerationV2TriggerEvent } from 'aws-lambda';
 process.env.TENANT_APPS = JSON.stringify({
   'acme-app1': { tenantId: 'acme', tenantName: 'Acme', app: 'app1', allowedDomains: [] },
   'globex-app2': { tenantId: 'globex', tenantName: 'Globex', app: 'app2', allowedDomains: [] },
-  'kw-app1': { tenantId: 'kw', tenantName: 'KW', app: 'app1', allowedDomains: ['kwglobal.com'] },
+  'corp-app1': { tenantId: 'corp', tenantName: 'Corp', app: 'app1', allowedDomains: ['corp.example'] },
 });
 const { handler } = await import('../lambda/demo-pre-token');
 
@@ -30,11 +30,11 @@ describe('demo pre-token: tenant apps', () => {
     await assert.rejects(handler(event('acme-app1', [])), /does not have access to Acme/);
   });
   it("lets a Microsoft user in by the tenant's email domain", async () => {
-    const e = await handler(event('kw-app1', [], { email: 'jo@KWGLOBAL.COM', identities: '[{"providerName":"Microsoft"}]' }));
-    assert.equal(claimsOf(e)?.tenant_id, 'kw');
+    const e = await handler(event('corp-app1', [], { email: 'jo@CORP.EXAMPLE', identities: '[{"providerName":"Microsoft"}]' }));
+    assert.equal(claimsOf(e)?.tenant_id, 'corp');
   });
   it('refuses a Microsoft user from another domain', async () => {
-    await assert.rejects(handler(event('kw-app1', [], { email: 'jo@tweddle.com', identities: '[{"providerName":"Microsoft"}]' })), /does not have access to KW/);
+    await assert.rejects(handler(event('corp-app1', [], { email: 'jo@other.example', identities: '[{"providerName":"Microsoft"}]' })), /does not have access to Corp/);
   });
   it('leaves apps that are not tenant apps unchanged', async () => {
     const e = await handler(event('plain-hosted-client', []));
